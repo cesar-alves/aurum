@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local playback). `--mic` RMS endpoint uses a longer hangover at the start of a
   turn (`--thinking-pause`, default 1.2s) so a ~1s mid-thought pause does not
   cut the user off.
+- **Dynamic local model catalogue:** versioned, integrity-pinned model records
+  support explicit deployment replacement and language-aware local STT defaults;
+  Portuguese specialist models remain opt-in and experimental.
 
 ### Fixed
 
@@ -30,10 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job under stable `-D warnings`. Behavior is unchanged; MSRV remains 1.89.
 - **Security (RUSTSEC-2026-0258):** bumped `h2` to 0.4.16, clearing the
   unbounded empty-DATA-frame advisory inherited transitively via `hyper`.
-
 - **Batch source snapshot (JOE-2316):** batch materializes a process-owned copy
   of each source while hashing; decode loads the snapshot so concurrent
   mutation of the original path cannot change the bytes that are transcribed.
+- **STT-only catalogue:** builds without the optional TTS feature no longer
+  expose TTS-only built-in records or reference TTS provider registries.
 
 ## [0.0.23] - 2026-08-03
 
