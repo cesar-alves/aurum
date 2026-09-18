@@ -48,6 +48,7 @@ cargo run -p aurum-stt -- tests/fixtures/sample.wav --model tiny-q5_1
 cargo run -p aurum-stt -- models
 cargo run -p aurum-stt -- models recommend --profile balance
 cargo run -p aurum-stt -- tts "Hello from aurum" -O /tmp/a.wav --force
+cargo run -p aurum-stt -- converse tests/fixtures/sample.wav --reply-text "Hello" -O /tmp/a.wav --force
 cargo run -p aurum-stt -- tts models
 cargo run -p aurum-stt -- tts voices
 cargo run -p aurum-stt -- batch tests/fixtures -O /tmp/aurum-batch --dry-run
@@ -79,6 +80,7 @@ python3 -m venv .venv && .venv/bin/pip install -r docs/requirements.txt
 - Prefer small, focused diffs
 - Call `clear_context_cache()` / `aurum_shutdown()` before process exit when using local whisper (Metal)
 - Treat `aurum-ffi` as a **provisional** embed surface: local STT, rules cleanup, **local** TTS jobs (ABI v2); **no remote** on FFI, no mic ownership
+- Session/voice hosts use `aurum converse --stdio` (host-owned paths). Do not put LLM or mic ownership in `aurum-core`
 - Pin model/voice downloads; fail closed on integrity mismatch
 - TTS: MIT-safe default path (no GPL phonemizer); document model licenses
 - Never invent CLI flags or unreviewed model IDs — use help + provider matrix

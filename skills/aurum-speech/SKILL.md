@@ -21,6 +21,10 @@ inventing flags, over-claiming providers, or leaking secrets.
 If you only need install/doctor basics, see also `skills/aurum-cli/`.  
 For multi-file resume only, see `skills/aurum-batch/`.  
 For host embeds only, see `skills/aurum-embed/`.  
+Session/harness hosts: `aurum converse --stdio` (host-owned WAV paths).
+Standalone CLI voice: `aurum converse --mic` with optional `--llm-provider`.
+Do not use `--llm-provider` or `--mic` inside a host that already owns mic + brain.
+See `docs/guide/live.md`.  
 **This skill is the speech authority** when the task is “transcribe / synthesize.”
 
 ## First principles (always)
@@ -28,7 +32,7 @@ For host embeds only, see `skills/aurum-embed/`.
 1. **Local-first** — STT default `local` (whisper.cpp); TTS default `local` (Kitten ONNX). No API key required.
 2. **Remote is opt-in** — requires explicit `--provider` **and** the matching env key. Presence of a key never changes the default provider.
 3. **Do not invent** — flags, config keys, model IDs, or voice IDs. Prefer:
-   - `aurum --help` / `aurum tts --help` / `aurum models` / `aurum tts models` / `aurum tts voices`
+   - `aurum --help` / `aurum tts --help` / `aurum converse --help` / `aurum models` / `aurum tts models` / `aurum tts voices`
    - `docs/reference/cli-help.md` (generated snapshot)
    - `docs/guide/provider-matrix.md` (reviewed catalogues)
 4. **Honesty** — report `provider`, model, and when timestamps are unreliable. Do not claim WER/RTF without a retained eval report.
@@ -81,6 +85,9 @@ aurum doctor
 aurum models
 aurum tests/fixtures/sample.wav --model tiny-q5_1
 aurum tts "Hello from aurum" -O /tmp/hello.wav --force --emit-json
+aurum converse tests/fixtures/sample.wav --reply-text "Hello" -O /tmp/hello.wav --force
+# LLM agent (explicit): aurum converse talk.wav --llm-provider openai -O /tmp/out.wav --force
+# Live mic (headphones): aurum converse --mic --model tiny-q5_1 --llm-provider openai
 aurum tts models && aurum tts voices
 ```
 

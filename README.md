@@ -117,6 +117,7 @@ aurum models recommend --profile balance
 aurum batch <INPUT> -O <DIR> [--resume] [--retry-failed]
 aurum cleanup [TEXT_FILE] --style clean   # alias: aurum flow
 aurum tts "Hello" -O out.wav [--voice Luna]
+aurum converse talk.wav --reply-text "Hello" -O out.wav
 aurum tts models && aurum tts voices
 aurum support-bundle -O support.json
 aurum completions zsh
@@ -146,6 +147,7 @@ aurum tts "Hello" --provider openai --model tts-1 --voice alloy -O /tmp/oai.wav
 | Models | [docs/guide/models.md](docs/guide/models.md) |
 | Cleanup | [docs/guide/cleanup.md](docs/guide/cleanup.md) |
 | TTS | [docs/guide/tts.md](docs/guide/tts.md) |
+| Speech sidecar | [docs/guide/live.md](docs/guide/live.md) |
 | Configuration | [docs/guide/configuration.md](docs/guide/configuration.md) |
 | Native embeds (FFI) | [docs/library/ffi.md](docs/library/ffi.md) |
 | Architecture | [docs/development/architecture.md](docs/development/architecture.md) |
@@ -182,8 +184,12 @@ do not assume a stable major version yet.
 
 ## Non-goals (0.0.x)
 
-Built-in microphone capture · speaker diarization · stable library major API ·
-remote execution on the C ABI · multi-tenant isolation in one process.
+Speaker diarization · stable library major API · remote execution on the C ABI ·
+multi-tenant isolation in one process · microphone ownership in `aurum-core` / FFI ·
+AEC / barge-in.
+
+Two supported converse modes: [`--stdio` sidecar](docs/guide/live.md) (host owns
+mic/brain) and `--mic` + optional `--llm-provider` (standalone CLI voice loop).
 
 ## License
 
