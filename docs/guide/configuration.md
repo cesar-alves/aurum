@@ -85,13 +85,11 @@ provider = "rules"         # rules | openrouter
 # [providers.elevenlabs]
 # [providers.xai]
 
-# An optional reviewed deployment catalogue. Its records replace matching
-# built-ins by canonical id; `enabled = false` may name the canonical id or an
-# existing alias and removes that entire record. `[defaults.stt].global` is
-# resolved after the effective catalogue is assembled, so it may target a
-# built-in; it must be a `supported` record (never experimental). Every record
-# is local (`provider = "local"`): remote models are chosen with `--provider`
-# plus credentials and are never catalogue records.
+# An optional reviewed deployment catalogue. It can only narrow the built-in
+# catalogue: an `enabled = false` record disables a built-in STT model (by
+# canonical id or alias), and `[defaults.stt].global` picks the default from
+# the remaining `supported` records (never experimental). Records that add or
+# replace a model, and TTS records, are rejected for now.
 # The path is explicit: Aurum never discovers, fetches, or falls back from it.
 # A relative path resolves against this config file's directory (not the cwd).
 # [catalogue]
@@ -111,15 +109,17 @@ invalidate a resumable batch.
 
 #### Deployment catalogue trust model
 
-`[catalogue].path` is a **trusted, operator-owned input**. Treat it like
-shipping model weights, because its records decide which hosts Aurum downloads
-weights from:
+`[catalogue].path` is a **trusted, operator-owned input**: it decides which
+local speech-to-text models this installation may use.
 
-- **Allowlist semantics.** Every `url` in a deployment catalogue is an
-  operator-approved download origin. Aurum requires HTTPS without embedded
-  credentials, plus an exact size and SHA-256 pin for every artifact, but it
-  does not restrict the host. Only point the path at files that you review and
-  control.
+- **Narrowing only.** A deployment catalogue can disable built-in STT models
+  and choose the default STT model. A disabled model is rejected however it
+  is requested: `--model`, `[stt].model`, `--profile`, `aurum batch`,
+  `aurum converse`, or `aurum cache repair`. Model downloads, cache pins and
+  TTS selection still come from the built-in catalogue, so a deployment record
+  that adds or replaces a model, or any TTS record, fails closed. Supporting
+  those records is tracked in
+  [the deployment records issue](https://github.com/joe-broadhead/aurum/issues/146).
 - **Path resolution.** A relative path resolves against the directory of the
   config file that names it. It never resolves against the process working
   directory, and it is an error when no config file is in use. An absolute

@@ -17,6 +17,8 @@ pub const CATALOGUE_SCHEMA_VERSION: u32 = 1;
 /// ~30 KiB; anything near this limit is not a reviewed model list.
 pub const MAX_CATALOGUE_BYTES: u64 = 1024 * 1024;
 const BUILTIN_TOML: &str = include_str!("model-catalogue.v1.toml");
+/// Tracks honouring deployment add/replace and TTS records.
+const DEPLOYMENT_RECORDS_ISSUE: &str = "https://github.com/joe-broadhead/aurum/issues/146";
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -319,22 +321,14 @@ impl EffectiveCatalogue {
             })
             .collect::<Result<_>>()?;
         let mut defaults = builtin.defaults;
-        if let Some((deployment, path)) = deployment {
+        if let Some((deployment, _path)) = deployment {
             deployment.validate()?;
-            // Deployment records replace the entire matching record; nothing is inherited.
+            reject_widening_deployment(&deployment)?;
+            // A deployment can only narrow the built-in catalogue: every record
+            // here is a disable entry for an STT built-in.
             for record in deployment.records {
                 let key = record.id.to_ascii_lowercase();
-                if record.enabled {
-                    let digest = digest(&record)?;
-                    records.insert(
-                        key,
-                        EffectiveRecord {
-                            record,
-                            source: CatalogueSource::Deployment { path: path.clone() },
-                            digest,
-                        },
-                    );
-                } else if records.remove(&key).is_none() {
+                if records.remove(&key).is_none() {
                     // Aliases are compatibility names; disabling one must disable
                     // its canonical record rather than silently doing nothing.
                     let alias_key = records.iter().find_map(|(canonical, entry)| {
@@ -467,6 +461,35 @@ impl EffectiveCatalogue {
         }
         Ok(())
     }
+}
+
+/// Model downloads, cache pins and TTS selection still read the legacy Rust
+/// tables (#125), so a deployment record that adds or replaces a model would
+/// change diagnostics without changing what is fetched. Until that routing
+/// lands, a deployment may only disable STT built-ins and choose the STT default.
+fn reject_widening_deployment(deployment: &CatalogueDocument) -> Result<()> {
+    let unsupported = |what: String| {
+        config_error(format!(
+            "deployment catalogue {what}; a deployment catalogue can currently only \
+             disable built-in STT models (`enabled = false`) and set [defaults.stt].global \
+             (see {DEPLOYMENT_RECORDS_ISSUE})"
+        ))
+    };
+    if deployment.defaults.tts.global.is_some() {
+        return Err(unsupported("sets [defaults.tts].global".into()));
+    }
+    for record in &deployment.records {
+        if record.direction == Direction::Tts {
+            return Err(unsupported(format!("has TTS record '{}'", record.id)));
+        }
+        if record.enabled {
+            return Err(unsupported(format!(
+                "adds or replaces model '{}'",
+                record.id
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Every effective id and alias must name exactly one record. Each document
@@ -1015,10 +1038,7 @@ origin = { kind = "downloadable_local", filename = "pinned-only.bin", url = "htt
         )
         .is_err());
     }
-    #[test]
-    fn deployment_replaces_and_disable_removes_aliases() {
-        let base = builtin_document().unwrap();
-        let deploy = CatalogueDocument::parse(r#"schema_version = 1
+    const DISABLE_TINY: &str = r#"schema_version = 1
 [[model]]
 id = "tiny"
 direction = "stt"
@@ -1026,79 +1046,84 @@ provider = "local"
 enabled = false
 tier = "supported"
 origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://example.com/tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
+"#;
+
+    #[test]
+    fn deployment_disable_removes_the_record() {
         let effective = EffectiveCatalogue::from_documents(
-            base,
-            Some((deploy, PathBuf::from("/tmp/deploy.toml"))),
+            builtin_document().unwrap(),
+            Some((
+                CatalogueDocument::parse(DISABLE_TINY).unwrap(),
+                PathBuf::from("/tmp/deploy.toml"),
+            )),
         )
         .unwrap();
         assert!(effective.lookup("tiny").is_none());
+        assert!(effective.lookup("base").is_some());
+        assert!(effective
+            .records()
+            .iter()
+            .all(|entry| entry.source == CatalogueSource::Builtin));
     }
 
     #[test]
-    fn deployment_replacement_has_no_inherited_aliases_or_metadata() {
-        let deployment_path = PathBuf::from("/tmp/deployment-catalogue.toml");
-        // `base` becomes experimental here, so the default must move off it.
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
-[defaults.stt]
-global = "tiny"
+    fn deployment_cannot_add_replace_or_touch_tts_records() {
+        let sha = "a".repeat(64);
+        let stt = |id: &str| {
+            format!(
+                r#"schema_version = 1
 [[model]]
-id = "base"
-aliases = ["replacement-base"]
+id = "{id}"
 direction = "stt"
 provider = "local"
-tier = "experimental"
-notes = "deployment-owned record"
-license = "Apache-2.0"
-origin = { kind = "downloadable_local", filename = "replacement-base.bin", url = "https://example.invalid/replacement-base.bin", size_bytes = 42, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
-        let effective = EffectiveCatalogue::from_documents(
-            builtin_document().unwrap(),
-            Some((deployment, deployment_path.clone())),
-        )
-        .unwrap();
-        let base = effective.lookup("base").unwrap();
-        assert_eq!(base.record.notes, "deployment-owned record");
-        assert_eq!(base.record.aliases, ["replacement-base"]);
-        assert!(
-            matches!(base.source, CatalogueSource::Deployment { ref path } if path == &deployment_path)
+tier = "supported"
+origin = {{ kind = "downloadable_local", filename = "x.bin", url = "https://example.invalid/x.bin", size_bytes = 42, sha256 = "{sha}" }}
+"#
+            )
+        };
+        let tts = format!(
+            r#"schema_version = 1
+[[model]]
+id = "kitten-nano-int8"
+direction = "tts"
+provider = "local"
+enabled = false
+tier = "supported"
+origin = {{ kind = "tts_pack", adapter = "kitten-onnx-v1", files = [{{ filename = "m.onnx", url = "https://example.invalid/m.onnx", size_bytes = 1, sha256 = "{sha}" }}], voices = [{{ id = "v", internal_key = "v", language = "en" }}], max_phoneme_tokens = 1, sample_rate_hz = 1, shipped = true }}
+"#
         );
-
-        // A replaced record does not inherit the built-in aliases (`large`).
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
-[[model]]
-id = "large-v3"
-direction = "stt"
-provider = "local"
-tier = "supported"
-origin = { kind = "downloadable_local", filename = "replacement-large.bin", url = "https://example.invalid/replacement-large.bin", size_bytes = 42, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
-        let builtin = EffectiveCatalogue::builtin().unwrap();
-        assert_eq!(builtin.lookup("large").unwrap().record.id, "large-v3");
-        let effective = EffectiveCatalogue::from_documents(
-            builtin_document().unwrap(),
-            Some((deployment, deployment_path)),
-        )
-        .unwrap();
-        assert!(effective.lookup("large-v3").is_some());
-        assert!(effective.lookup("large").is_none());
+        for (case, document) in [
+            ("new id", stt("deployment-only")),
+            ("replacement", stt("base")),
+            ("tts record", tts),
+            (
+                "tts default",
+                "schema_version = 1\n[defaults.tts]\nglobal = \"kitten-nano-int8\"\n".into(),
+            ),
+        ] {
+            let err = EffectiveCatalogue::from_documents(
+                builtin_document().unwrap(),
+                Some((
+                    CatalogueDocument::parse(&document).unwrap(),
+                    PathBuf::from("/tmp/deploy.toml"),
+                )),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("can currently only"), "{case}: {err}");
+            assert!(err.contains(DEPLOYMENT_RECORDS_ISSUE), "{case}: {err}");
+        }
     }
 
     #[test]
-    fn effective_digest_changes_when_a_record_changes() {
+    fn effective_digest_changes_when_a_record_is_disabled() {
         let builtin = EffectiveCatalogue::builtin().unwrap();
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
-[[model]]
-id = "base"
-direction = "stt"
-provider = "local"
-tier = "supported"
-notes = "changed effective record"
-origin = { kind = "downloadable_local", filename = "changed-base.bin", url = "https://example.invalid/changed-base.bin", size_bytes = 42, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
         let changed = EffectiveCatalogue::from_documents(
             builtin_document().unwrap(),
-            Some((deployment, PathBuf::from("/tmp/changed.toml"))),
+            Some((
+                CatalogueDocument::parse(DISABLE_TINY).unwrap(),
+                PathBuf::from("/tmp/changed.toml"),
+            )),
         )
         .unwrap();
         assert_ne!(builtin.digest(), changed.digest());
@@ -1182,15 +1207,7 @@ origin = { kind = "downloadable_local", filename = "unused.bin", url = "https://
 
     #[test]
     fn digest_does_not_depend_on_deployment_path() {
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
-[[model]]
-id = "base"
-direction = "stt"
-provider = "local"
-tier = "supported"
-notes = "same content"
-origin = { kind = "downloadable_local", filename = "base.bin", url = "https://example.invalid/base.bin", size_bytes = 42, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
+        let deployment = CatalogueDocument::parse(DISABLE_TINY).unwrap();
         let a = EffectiveCatalogue::from_documents(
             builtin_document().unwrap(),
             Some((deployment.clone(), PathBuf::from("/tmp/a.toml"))),
