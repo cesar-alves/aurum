@@ -145,6 +145,8 @@ pub struct EffectiveRecord {
 pub struct EffectiveCatalogue {
     records: Vec<EffectiveRecord>,
     defaults: Defaults,
+    /// Computed once at construction so reading it can never fail or panic.
+    digest: String,
 }
 
 impl CatalogueDocument {
@@ -250,17 +252,17 @@ impl EffectiveCatalogue {
             .into_iter()
             .filter(|record| record.enabled)
             .map(|record| {
-                let digest = digest(&record);
-                (
+                let digest = digest(&record)?;
+                Ok((
                     record.id.to_ascii_lowercase(),
                     EffectiveRecord {
                         record,
                         source: CatalogueSource::Builtin,
                         digest,
                     },
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let mut defaults = builtin.defaults;
         if let Some((deployment, path)) = deployment {
             deployment.validate()?;
@@ -268,7 +270,7 @@ impl EffectiveCatalogue {
             for record in deployment.records {
                 let key = record.id.to_ascii_lowercase();
                 if record.enabled {
-                    let digest = digest(&record);
+                    let digest = digest(&record)?;
                     records.insert(
                         key,
                         EffectiveRecord {
@@ -303,7 +305,19 @@ impl EffectiveCatalogue {
             merge_defaults(&mut defaults.tts, deployment.defaults.tts);
         }
         let records: Vec<_> = records.into_values().collect();
-        let effective = Self { records, defaults };
+        // Source paths are diagnostic metadata, not model identity. Moving an
+        // identical deployment file must not invalidate resumable batches.
+        let digest = digest(
+            &records
+                .iter()
+                .map(|entry| &entry.record)
+                .collect::<Vec<_>>(),
+        )?;
+        let effective = Self {
+            records,
+            defaults,
+            digest,
+        };
         effective.validate_effective()?;
         Ok(effective)
     }
@@ -313,19 +327,8 @@ impl EffectiveCatalogue {
     }
     /// Digest of the canonical serialized effective records for diagnostics and
     /// resumable batch fingerprints.
-    pub fn digest(&self) -> String {
-        hex::encode(Sha256::digest(
-            // Source paths are diagnostic metadata, not model identity. Moving an
-            // identical deployment file must not invalidate resumable batches.
-            serde_json::to_vec(
-                &self
-                    .records
-                    .iter()
-                    .map(|entry| &entry.record)
-                    .collect::<Vec<_>>(),
-            )
-            .expect("effective catalogue is serializable"),
-        ))
+    pub fn digest(&self) -> &str {
+        &self.digest
     }
     pub fn source_for(&self, id: &str) -> Option<&CatalogueSource> {
         self.lookup(id).map(|r| &r.source)
@@ -611,10 +614,12 @@ fn pin(size: u64, sha256: &str) -> Result<()> {
         ))
     }
 }
-fn digest(record: &CatalogueRecord) -> String {
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(record).expect("catalogue record is serializable"),
-    ))
+/// SHA-256 of the canonical JSON encoding. Serialization failure is reported
+/// as a configuration error rather than aborting config load or fingerprinting.
+fn digest<T: Serialize + ?Sized>(value: &T) -> Result<String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| config_error(format!("cannot encode catalogue for digest: {e}")))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 fn invalid(error: toml::de::Error) -> crate::error::AurumError {
     config_error(format!("invalid catalogue TOML: {error}"))

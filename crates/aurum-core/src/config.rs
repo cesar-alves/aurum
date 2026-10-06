@@ -885,7 +885,7 @@ impl Config {
                 .catalogue_path
                 .as_ref()
                 .map(|path| path.display().to_string()),
-            catalogue_digest: self.catalogue.digest(),
+            catalogue_digest: self.catalogue.digest().to_string(),
             catalogue_records: self
                 .catalogue
                 .records()
