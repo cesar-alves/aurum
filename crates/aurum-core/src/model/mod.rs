@@ -8,10 +8,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// HuggingFace repo hosting official ggml whisper.cpp models.
-/// Content authenticity is enforced by reviewed SHA-256 pins (JOE-1590), not by
-/// mutable branch tip alone. Prefer pins over URL mutability.
-const HF_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+/// Immutable `ggerganov/whisper.cpp` Hugging Face revision for official ggml
+/// models. Every pinned size and SHA-256 below was verified at this revision.
+const WHISPER_CPP_REVISION: &str = "5359861c739e955e79d9a303bcbc70fb988958b1";
+/// HuggingFace repo hosting official ggml whisper.cpp models, at the immutable
+/// revision above. Content authenticity is still enforced by reviewed SHA-256
+/// pins (JOE-1590); the revision keeps the URL itself from moving.
+const HF_BASE: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1";
 const MEDIUM_PTBR_REVISION: &str = "3ac780ce98aeafecfe2dcd8577833e00011a5bfb";
 const MEDIUM_PTBR_URL: &str = "https://huggingface.co/nexorama-tech/whisper-medium-ptbr-q5_0/resolve/3ac780ce98aeafecfe2dcd8577833e00011a5bfb/whisper-medium-ptbr-q5_0.bin";
 const LARGE_V3_PTPT_REVISION: &str = "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
@@ -706,7 +710,7 @@ pub fn artifact_manifest_json(info: &ModelInfo) -> serde_json::Value {
         match source {
             ModelArtifactSource::OfficialWhisperCpp => {
                 let url = format!("{HF_BASE}/{}", info.filename);
-                (url.clone(), "main", Some(url), false, None)
+                (url.clone(), WHISPER_CPP_REVISION, Some(url), false, None)
             }
             ModelArtifactSource::ImmutableDownload {
                 url,
