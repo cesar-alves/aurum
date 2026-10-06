@@ -63,10 +63,10 @@ unless hosts consume `NormalizationReport` directly.
 
 ### Portuguese specialists (experimental)
 
-Two experimental Q5 models are selected automatically when an explicit dialect
-language is requested and no model is supplied: `--language pt-BR` selects
-`medium-ptbr-q5_0`; `--language pt-PT` selects `large-v3-ptpt-q5_0`. They can
-also be selected explicitly for evaluation:
+Two experimental Q5 models are available for Portuguese. They are **never**
+selected automatically: `--language` is a decoding hint only, so
+`--language pt-BR` or `--language pt-PT` without `--model` still uses the
+default `base`. Opt in with an explicit `--model` (or `[stt].model`):
 
 ```bash
 aurum input.wav --model medium-ptbr-q5_0 --language pt -o json
@@ -86,10 +86,11 @@ scripts/prepare_portuguese_models.sh \
 Both remain outside the speed/balance/quality profiles while dialect-specific
 quality, hallucination, and quantization evidence is reviewed.
 
-The Brazilian model downloads on first use. The European Portuguese model is
-prepared locally, so an explicit `--language pt-PT` fails with preparation
-guidance until the command above has completed. `language = auto` remains on
-the global local `base` default.
+Recommended pairing: `medium-ptbr-q5_0` for Brazilian Portuguese audio and
+`large-v3-ptpt-q5_0` for European Portuguese audio. The Brazilian model
+downloads (~539 MB) on first explicit use. Selecting the European Portuguese
+model before running the command above fails with preparation guidance and
+never attempts a download.
 
 ## Catalogue (aliases)
 

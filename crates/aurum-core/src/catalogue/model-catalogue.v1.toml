@@ -2,9 +2,6 @@ schema_version = 1
 
 [defaults.stt]
 global = "base"
-[defaults.stt.language]
-pt-BR = "medium-ptbr-q5_0"
-pt-PT = "large-v3-ptpt-q5_0"
 
 [defaults.tts]
 global = "kitten-nano-int8"
