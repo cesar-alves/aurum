@@ -520,12 +520,23 @@ fn validate_id(value: &str, field: &str) -> Result<()> {
         && value.len() <= 128
         && value
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'));
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
     if valid {
         Ok(())
     } else {
         Err(config_error(format!("invalid {field} '{value}'")))
     }
+}
+/// Artifact filenames are joined onto cache directories, so each one must be a
+/// single, visible path component: no separators, no `.`/`..`, no dotfiles.
+fn validate_filename(value: &str, field: &str) -> Result<()> {
+    validate_id(value, field)?;
+    if value.starts_with('.') {
+        return Err(config_error(format!(
+            "invalid {field} '{value}': must be a single file name, not a dotfile or relative path"
+        )));
+    }
+    Ok(())
 }
 fn validate_language(language: &str) -> Result<()> {
     if language.eq_ignore_ascii_case("auto") {
@@ -548,7 +559,7 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
             sha256,
         } => {
             local_record(record)?;
-            validate_id(filename, "artifact filename")?;
+            validate_filename(filename, "artifact filename")?;
             safe_https(url)?;
             pin(*size_bytes, sha256)
         }
@@ -561,7 +572,7 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
             preparation,
         } => {
             local_record(record)?;
-            validate_id(filename, "artifact filename")?;
+            validate_filename(filename, "artifact filename")?;
             safe_https(source_url)?;
             if revision.trim().is_empty() || preparation.trim().is_empty() {
                 return Err(config_error(
@@ -597,7 +608,7 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
                 ));
             }
             for file in files {
-                validate_id(&file.filename, "pack filename")?;
+                validate_filename(&file.filename, "pack filename")?;
                 safe_https(&file.url)?;
                 pin(file.size_bytes, &file.sha256)?;
             }
@@ -1214,6 +1225,38 @@ origin = { kind = "downloadable_local", filename = "base.bin", url = "https://ex
             reject_effective_name_collisions(EffectiveCatalogue::builtin().unwrap().records())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn artifact_filenames_and_ids_are_single_path_components() {
+        let record = |id: &str, filename: &str| {
+            format!(
+                r#"schema_version = 1
+[[model]]
+id = "{id}"
+direction = "stt"
+provider = "local"
+tier = "supported"
+origin = {{ kind = "downloadable_local", filename = "{filename}", url = "https://example.invalid/x.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }}
+"#
+            )
+        };
+        for filename in [
+            "../x.bin",
+            "../../../.config/x",
+            "a/b.bin",
+            "a\\\\b.bin",
+            ".hidden",
+            ".",
+            "..",
+        ] {
+            assert!(
+                CatalogueDocument::parse(&record("ok", filename)).is_err(),
+                "{filename}"
+            );
+        }
+        assert!(CatalogueDocument::parse(&record("org/model", "x.bin")).is_err());
+        assert!(CatalogueDocument::parse(&record("ok", "ggml-x_q5.0.bin")).is_ok());
     }
 
     #[test]
