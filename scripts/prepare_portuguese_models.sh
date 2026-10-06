@@ -10,7 +10,9 @@ EXPECTED_Q5_BYTES="1081140203"
 EXPECTED_Q5_SHA256="92c6b30b24dc7b035505a1750bfd3dac51d0984ea7120bc518d3f5c3228030c7"
 
 CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}"
-WORK_DIR="/tmp/aurum-portuguese-tools"
+# Defaults to a directory under CACHE_ROOT once arguments are parsed. Never a
+# fixed shared path: this directory holds a Python venv that the script runs.
+WORK_DIR=""
 KEEP_F16=0
 
 usage() {
@@ -22,7 +24,8 @@ trusted Q5_0 cache artifact.
 
 Options:
   --cache-root PATH  XDG cache root (default: $XDG_CACHE_HOME or $HOME/.cache)
-  --work-dir PATH    conversion workspace (default: /tmp/aurum-portuguese-tools)
+  --work-dir PATH    conversion workspace, owned by you
+                     (default: <cache-root>/aurum/prepare-portuguese)
   --keep-f16         retain the converted F16 model for quantization comparison
   -h, --help         show this help
 EOF
@@ -74,6 +77,8 @@ fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+REQUIREMENTS="${SCRIPT_DIR}/requirements/portuguese-prep.txt"
+WORK_DIR="${WORK_DIR:-${CACHE_ROOT}/aurum/prepare-portuguese}"
 WHISPER_CPP_DIR="${WORK_DIR}/whisper.cpp"
 OPENAI_WHISPER_DIR="${WORK_DIR}/openai-whisper"
 CHECKPOINT_DIR="${WORK_DIR}/WhisperLv3-FT"
@@ -84,7 +89,23 @@ Q5_PATH="${CONVERT_DIR}/ggml-large-v3-ptpt-q5_0.bin"
 MODEL_DIR="${CACHE_ROOT}/aurum/models"
 DEST_PATH="${MODEL_DIR}/ggml-large-v3-ptpt-q5_0.bin"
 
-mkdir -p "$WORK_DIR" "$CONVERT_DIR" "$MODEL_DIR"
+# Code from the work dir (the venv, the whisper.cpp build) is executed, so it
+# must belong to the current user and must not be redirected through a symlink.
+require_owned_dir() {
+  local dir="$1"
+  if [[ -L "$dir" ]]; then
+    echo "refusing to use symlinked directory: $dir" >&2
+    exit 3
+  fi
+  (umask 077 && mkdir -p "$dir")
+  if [[ ! -d "$dir" || ! -O "$dir" ]]; then
+    echo "refusing to use directory not owned by $(id -un): $dir" >&2
+    exit 3
+  fi
+}
+
+require_owned_dir "$WORK_DIR"
+mkdir -p "$CONVERT_DIR" "$MODEL_DIR"
 available_kib="$(df -Pk "$WORK_DIR" | awk 'NR == 2 {print $4}')"
 required_kib=$((13 * 1024 * 1024))
 if [[ ! "$available_kib" =~ ^[0-9]+$ ]] || ((available_kib < required_kib)); then
@@ -118,17 +139,17 @@ checkout_pinned_repo \
   "$OPENAI_WHISPER_REVISION" \
   "$OPENAI_WHISPER_DIR"
 
+if [[ -e "$VENV_DIR" ]]; then
+  require_owned_dir "$VENV_DIR"
+fi
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   uv venv --python 3.11 "$VENV_DIR"
 fi
+# Every package, including transitive dependencies, is pinned by hash.
 uv pip install --python "$VENV_DIR/bin/python" \
-  --index-url https://download.pytorch.org/whl/cpu \
-  "torch==2.2.2+cpu"
-uv pip install --python "$VENV_DIR/bin/python" \
-  "huggingface-hub==0.28.1" \
-  "numpy==1.26.4" \
-  "safetensors==0.4.3" \
-  "transformers==4.48.2"
+  --require-hashes \
+  --index-strategy unsafe-best-match \
+  -r "$REQUIREMENTS"
 
 INESC_REVISION="$INESC_REVISION" \
 OPENAI_LARGE_V3_REVISION="$OPENAI_LARGE_V3_REVISION" \
@@ -225,11 +246,11 @@ INESC:    $INESC_REVISION
 Tokenizer: $OPENAI_LARGE_V3_REVISION
 whisper.cpp: $WHISPER_CPP_REVISION
 
-Use with the experiment binary:
-  XDG_CACHE_HOME="$CACHE_ROOT" /tmp/aurum-portuguese-target/release/aurum input.wav --model large-v3-ptpt-q5_0 --language pt -o json
+Use it with Aurum:
+  XDG_CACHE_HOME="$CACHE_ROOT" aurum input.wav --model large-v3-ptpt-q5_0 --language pt -o json
 
 Download and use the immutable pt-BR model through Aurum:
-  XDG_CACHE_HOME="$CACHE_ROOT" /tmp/aurum-portuguese-target/release/aurum input.wav --model medium-ptbr-q5_0 --language pt -o json
+  XDG_CACHE_HOME="$CACHE_ROOT" aurum input.wav --model medium-ptbr-q5_0 --language pt -o json
 EOF
 
 if ((KEEP_F16 == 1)); then

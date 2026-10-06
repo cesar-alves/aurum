@@ -78,10 +78,14 @@ revision. `large-v3-ptpt-q5_0` is generated from the pinned INESC-ID
 `WhisperLv3-FT` checkpoint and therefore must be prepared locally:
 
 ```bash
-scripts/prepare_portuguese_models.sh \
-  --cache-root "${XDG_CACHE_HOME:-$HOME/.cache}" \
-  --work-dir /tmp/aurum-portuguese-tools
+scripts/prepare_portuguese_models.sh
 ```
+
+The script installs a hash-locked Python environment
+(`scripts/requirements/portuguese-prep.txt`) and keeps its work directory under
+`${XDG_CACHE_HOME:-$HOME/.cache}/aurum/prepare-portuguese`. It refuses a work
+directory that is a symlink or that you do not own. It needs about 13 GiB of
+free space there.
 
 Both remain outside the speed/balance/quality profiles while dialect-specific
 quality, hallucination, and quantization evidence is reviewed.
