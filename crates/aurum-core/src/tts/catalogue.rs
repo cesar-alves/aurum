@@ -25,7 +25,7 @@ pub struct PackFile {
     pub sha256: &'static str,
     pub approx_bytes: u64,
     /// Absolute download URL. When `None`, resolved via Hugging Face
-    /// `{HF_BASE}/{hf_repo}/resolve/main/{filename}`.
+    /// `{HF_BASE}/{hf_repo}/resolve/{hf_revision}/{filename}`.
     pub url: Option<&'static str>,
 }
 
@@ -36,6 +36,8 @@ pub struct TtsModelInfo {
     pub notes: &'static str,
     /// HuggingFace repo id, e.g. `KittenML/kitten-tts-nano-0.8-int8`.
     pub hf_repo: &'static str,
+    /// Immutable Hugging Face commit used for `hf_repo` downloads (never `main`).
+    pub hf_revision: &'static str,
     pub onnx: PackFile,
     pub voices: PackFile,
     pub config: PackFile,
@@ -74,6 +76,7 @@ pub const MODELS: &[TtsModelInfo] = &[
         id: DEFAULT_TTS_MODEL,
         notes: "KittenTTS nano int8 ~25MB — default English ONNX",
         hf_repo: "KittenML/kitten-tts-nano-0.8-int8",
+        hf_revision: "84781d74e29ee25217551556398b42f80593a813",
         onnx: PackFile {
             filename: "kitten_tts_nano_v0_8.onnx",
             sha256: "f7b0afcbee92870b32b8e0276d855b954dc25470c9f051b376ac7eee537c76fc",
@@ -106,6 +109,7 @@ pub const MODELS: &[TtsModelInfo] = &[
         id: KOKORO_TTS_MODEL,
         notes: "Kokoro-82M int8 ~88MB ONNX — opt-in higher-quality English (not default)",
         hf_repo: "hexgrad/Kokoro-82M",
+        hf_revision: "f3ff3571791e39611d31c381e3a41a3af07b4987",
         onnx: PackFile {
             filename: "kokoro-v1.0.int8.onnx",
             sha256: "6e742170d309016e5891a994e1ce1559c702a2ccd0075e67ef7157974f6406cb",
@@ -129,7 +133,7 @@ pub const MODELS: &[TtsModelInfo] = &[
             sha256: "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f",
             approx_bytes: 2_351,
             url: Some(
-                "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/config.json?download=true",
+                "https://huggingface.co/hexgrad/Kokoro-82M/resolve/f3ff3571791e39611d31c381e3a41a3af07b4987/config.json?download=true",
             ),
         },
         sample_rate_hz: 24_000,
@@ -146,6 +150,7 @@ pub const MODELS: &[TtsModelInfo] = &[
         id: PLACEHOLDER_ADAPTER_MODEL,
         notes: "Catalogue placeholder for multi-adapter prep (not downloadable)",
         hf_repo: "aurum/not-shipped",
+        hf_revision: "0000000000000000000000000000000000000000",
         onnx: PackFile {
             filename: "not-shipped.onnx",
             sha256: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -565,6 +570,17 @@ pub fn validate_speaking_rate(rate: f32) -> Result<f32> {
     Ok(rate)
 }
 
+/// Download URL for one pack file: its absolute URL, else the pinned HF revision.
+pub(crate) fn pack_file_url(info: &TtsModelInfo, file: &PackFile) -> String {
+    match file.url {
+        Some(absolute) => absolute.to_string(),
+        None => format!(
+            "{HF_BASE}/{}/resolve/{}/{}?download=true",
+            info.hf_repo, info.hf_revision, file.filename
+        ),
+    }
+}
+
 /// `<cache>/tts/`
 pub fn tts_cache_dir(cache_dir: &Path) -> PathBuf {
     cache_dir.join("tts")
@@ -850,13 +866,7 @@ pub async fn ensure_voice_pack(
         if dest.exists() && verify_against_expected(&dest, file.sha256) {
             continue;
         }
-        let url = match file.url {
-            Some(absolute) => absolute.to_string(),
-            None => format!(
-                "{HF_BASE}/{}/resolve/main/{}?download=true",
-                info.hf_repo, file.filename
-            ),
-        };
+        let url = pack_file_url(info, &file);
         if let Err(e) = download_pinned(
             info.id,
             &url,

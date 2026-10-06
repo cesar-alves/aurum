@@ -395,10 +395,9 @@ impl EffectiveCatalogue {
     }
 }
 
-/// The v1 document owns reviewed metadata.  Legacy local Whisper records are
-/// materialized here until their consumers finish moving off the historical
-/// `model::MODELS` compatibility view; this keeps every existing ID and pin in
-/// the effective catalogue during that transition.
+/// The embedded v1 document is the complete built-in catalogue. Nothing is
+/// synthesized from Rust tables: parity tests instead assert that the legacy
+/// `model::MODELS` / `tts::catalogue::MODELS` views match this file exactly.
 fn builtin_document() -> Result<CatalogueDocument> {
     let mut document = CatalogueDocument::parse(BUILTIN_TOML)?;
     #[cfg(not(feature = "tts"))]
@@ -408,109 +407,10 @@ fn builtin_document() -> Result<CatalogueDocument> {
             .retain(|record| record.direction != Direction::Tts);
         document.defaults.tts = DirectionDefaults::default();
     }
-    for model in crate::model::MODELS {
-        if document
-            .records
-            .iter()
-            .any(|record| record.id == model.name)
-        {
-            continue;
+    for record in &document.records {
+        for url in record_urls(record) {
+            reviewed_builtin_url(url)?;
         }
-        let sha256 = crate::model::pinned_sha256(model.filename)
-            .ok_or_else(|| config_error(format!("missing built-in pin for {}", model.filename)))?;
-        let size_bytes = crate::model::pinned_exact_bytes(model.filename)
-            .ok_or_else(|| config_error(format!("missing built-in size for {}", model.filename)))?;
-        let origin = if model.name == "large-v3-ptpt-q5_0" {
-            Origin::PreparedLocal {
-                filename: model.filename.into(), size_bytes, sha256: sha256.into(),
-                source_url: "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0".into(),
-                revision: "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0".into(),
-                preparation: "scripts/prepare_portuguese_models.sh --cache-root ${XDG_CACHE_HOME:-$HOME/.cache} --work-dir /tmp/aurum-portuguese-tools".into(),
-            }
-        } else {
-            Origin::DownloadableLocal {
-                filename: model.filename.into(),
-                size_bytes,
-                sha256: sha256.into(),
-                url: format!(
-                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
-                    model.filename
-                ),
-            }
-        };
-        document.records.push(CatalogueRecord {
-            id: model.name.into(),
-            direction: Direction::Stt,
-            provider: "local".into(),
-            aliases: Vec::new(),
-            enabled: true,
-            tier: if matches!(
-                model.name,
-                "large-v3-q5_0" | "medium-ptbr-q5_0" | "large-v3-ptpt-q5_0"
-            ) {
-                SupportTier::Experimental
-            } else {
-                SupportTier::Supported
-            },
-            languages: Vec::new(),
-            notes: model.notes.into(),
-            license: "MIT (whisper.cpp weights via OpenAI Whisper terms)".into(),
-            origin,
-        });
-    }
-    #[cfg(feature = "tts")]
-    for model in crate::tts::catalogue::MODELS {
-        if document.records.iter().any(|record| record.id == model.id) {
-            continue;
-        }
-        let pack_file = |file: &crate::tts::catalogue::PackFile| PackFile {
-            filename: file.filename.into(),
-            url: file.url.map(str::to_string).unwrap_or_else(|| {
-                format!(
-                    "https://huggingface.co/{}/resolve/main/{}",
-                    model.hf_repo, file.filename
-                )
-            }),
-            size_bytes: file.approx_bytes,
-            sha256: file.sha256.into(),
-        };
-        let voices = crate::tts::catalogue::VOICES
-            .iter()
-            .filter(|voice| voice.model == model.id)
-            .map(|voice| Voice {
-                id: voice.id.into(),
-                internal_key: voice.internal_key.into(),
-                language: voice.language.into(),
-                notes: voice.notes.into(),
-            })
-            .collect();
-        document.records.push(CatalogueRecord {
-            id: model.id.into(),
-            direction: Direction::Tts,
-            provider: "local".into(),
-            aliases: Vec::new(),
-            enabled: true,
-            tier: SupportTier::Supported,
-            languages: model
-                .languages
-                .iter()
-                .map(|language| (*language).into())
-                .collect(),
-            notes: model.notes.into(),
-            license: model.license.into(),
-            origin: Origin::TtsPack {
-                adapter: model.adapter.into(),
-                files: vec![
-                    pack_file(&model.onnx),
-                    pack_file(&model.voices),
-                    pack_file(&model.config),
-                ],
-                voices,
-                max_phoneme_tokens: model.max_phoneme_tokens,
-                sample_rate_hz: model.sample_rate_hz,
-                shipped: model.shipped,
-            },
-        });
     }
     for record in crate::providers::OPENAI_STT_REGISTRY {
         push_remote(
@@ -781,6 +681,44 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
         }
     }
 }
+fn record_urls(record: &CatalogueRecord) -> Vec<&str> {
+    match &record.origin {
+        Origin::DownloadableLocal { url, .. } => vec![url.as_str()],
+        Origin::PreparedLocal { source_url, .. } => vec![source_url.as_str()],
+        Origin::TtsPack { files, .. } => files.iter().map(|file| file.url.as_str()).collect(),
+        Origin::Remote { .. } => Vec::new(),
+    }
+}
+/// Built-in records may only point at the reviewed hosts already used by
+/// `model::` / `tts::catalogue`, and Hugging Face URLs must name an immutable
+/// 40-hex revision rather than a moving branch such as `main`.
+fn reviewed_builtin_url(url: &str) -> Result<()> {
+    let parsed = url::Url::parse(url).map_err(|_| config_error(format!("invalid URL '{url}'")))?;
+    let segments: Vec<&str> = parsed
+        .path_segments()
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    let is_revision = |rev: &str| rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
+    let reviewed = parsed.scheme() == "https"
+        && match parsed.host_str() {
+            // huggingface.co/{org}/{repo}/(resolve|tree)/{revision}/...
+            Some("huggingface.co") => {
+                segments.len() >= 4
+                    && matches!(segments[2], "resolve" | "tree")
+                    && is_revision(segments[3])
+            }
+            // github.com/{org}/{repo}/releases/download/{tag}/{asset}
+            Some("github.com") => segments.len() == 6 && segments[2..4] == ["releases", "download"],
+            _ => false,
+        };
+    if reviewed {
+        Ok(())
+    } else {
+        Err(config_error(format!(
+            "built-in catalogue URL must use a reviewed host and an immutable revision: '{url}'"
+        )))
+    }
+}
 fn local_record(record: &CatalogueRecord) -> Result<()> {
     if record.direction == Direction::Stt && record.provider.eq_ignore_ascii_case("local") {
         Ok(())
@@ -864,13 +802,22 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
     }
 
     #[test]
-    fn effective_builtin_catalogue_covers_legacy_stt_ids_and_pins() {
-        let catalogue = EffectiveCatalogue::builtin().unwrap();
+    fn toml_stt_records_match_the_legacy_table_exactly() {
+        let document = builtin_document().unwrap();
+        let stt: Vec<_> = document
+            .records
+            .iter()
+            .filter(|record| record.direction == Direction::Stt && record.provider == "local")
+            .collect();
+        // Every legacy name (canonical or alias) is a TOML id or alias with identical pins.
         for model in crate::model::MODELS {
-            let record = catalogue
-                .lookup(model.name)
-                .unwrap_or_else(|| panic!("missing {}", model.name));
-            let (filename, size_bytes, sha256) = match &record.record.origin {
+            let record = stt
+                .iter()
+                .find(|record| {
+                    record.id == model.name || record.aliases.iter().any(|a| a == model.name)
+                })
+                .unwrap_or_else(|| panic!("{} missing from model-catalogue.v1.toml", model.name));
+            let (filename, size_bytes, sha256) = match &record.origin {
                 Origin::DownloadableLocal {
                     filename,
                     size_bytes,
@@ -887,27 +834,148 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             };
             assert_eq!(filename, model.filename, "{} filename drift", model.name);
             assert_eq!(
-                size_bytes,
-                crate::model::pinned_exact_bytes(model.filename).unwrap(),
+                Some(size_bytes),
+                crate::model::pinned_exact_bytes(model.filename),
                 "{} exact size drift",
                 model.name
             );
             assert_eq!(
-                sha256,
-                crate::model::pinned_sha256(model.filename).unwrap(),
+                Some(sha256.as_str()),
+                crate::model::pinned_sha256(model.filename),
                 "{} sha256 drift",
                 model.name
             );
+            let tier = match crate::model::model_support_tier(model.name) {
+                crate::model::ModelSupportTier::Supported => SupportTier::Supported,
+                crate::model::ModelSupportTier::Experimental => SupportTier::Experimental,
+            };
+            assert_eq!(record.tier, tier, "{} tier drift", model.name);
+            // The URL a reviewer reads is the URL the downloader fetches.
+            let manifest = crate::model::artifact_manifest_json(model);
+            match &record.origin {
+                Origin::DownloadableLocal { url, .. } => assert_eq!(
+                    manifest["download_url_template"],
+                    url.as_str(),
+                    "{} url drift",
+                    model.name
+                ),
+                Origin::PreparedLocal {
+                    revision,
+                    source_url,
+                    ..
+                } => {
+                    assert!(manifest["download_url_template"].is_null());
+                    assert_eq!(manifest["source_revision"], revision.as_str());
+                    assert_eq!(manifest["source_url"], source_url.as_str());
+                }
+                _ => unreachable!(),
+            }
+        }
+        // And nothing in the TOML is unknown to the legacy download path.
+        for record in &stt {
+            for name in std::iter::once(&record.id).chain(&record.aliases) {
+                assert!(
+                    crate::model::lookup_model(name).is_ok(),
+                    "{name} is in the TOML but not in model::MODELS"
+                );
+            }
         }
     }
 
     #[cfg(feature = "tts")]
     #[test]
-    fn effective_builtin_catalogue_covers_legacy_tts_models() {
-        let catalogue = EffectiveCatalogue::builtin().unwrap();
-        for model in crate::tts::catalogue::MODELS {
-            assert!(catalogue.lookup(model.id).is_some(), "missing {}", model.id);
+    fn toml_tts_records_match_the_legacy_table_exactly() {
+        use crate::tts::catalogue as tts;
+        let document = builtin_document().unwrap();
+        let shipped: Vec<_> = tts::MODELS.iter().filter(|model| model.shipped).collect();
+        for model in &shipped {
+            let record = document
+                .records
+                .iter()
+                .find(|record| record.id == model.id)
+                .unwrap_or_else(|| panic!("{} missing from model-catalogue.v1.toml", model.id));
+            assert_eq!(record.direction, Direction::Tts);
+            assert_eq!(record.license, model.license);
+            assert_eq!(record.languages, model.languages);
+            let Origin::TtsPack {
+                adapter,
+                files,
+                voices,
+                max_phoneme_tokens,
+                sample_rate_hz,
+                shipped,
+            } = &record.origin
+            else {
+                panic!("{} is not a tts_pack", model.id);
+            };
+            assert_eq!(adapter, model.adapter);
+            assert_eq!(*max_phoneme_tokens, model.max_phoneme_tokens);
+            assert_eq!(*sample_rate_hz, model.sample_rate_hz);
+            assert!(*shipped);
+            let expected: Vec<_> = [model.onnx, model.voices, model.config]
+                .iter()
+                .map(|file| {
+                    (
+                        file.filename.to_string(),
+                        tts::pack_file_url(model, file),
+                        file.approx_bytes,
+                        file.sha256.to_string(),
+                    )
+                })
+                .collect();
+            let actual: Vec<_> = files
+                .iter()
+                .map(|file| {
+                    (
+                        file.filename.clone(),
+                        file.url.clone(),
+                        file.size_bytes,
+                        file.sha256.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(actual, expected, "{} pack file drift", model.id);
+            let expected_voices: Vec<_> = tts::VOICES
+                .iter()
+                .filter(|voice| voice.model == model.id)
+                .map(|voice| (voice.id, voice.internal_key, voice.language))
+                .collect();
+            let actual_voices: Vec<_> = voices
+                .iter()
+                .map(|voice| {
+                    (
+                        voice.id.as_str(),
+                        voice.internal_key.as_str(),
+                        voice.language.as_str(),
+                    )
+                })
+                .collect();
+            assert_eq!(actual_voices, expected_voices, "{} voice drift", model.id);
         }
+        let tts_records = document
+            .records
+            .iter()
+            .filter(|record| record.direction == Direction::Tts && record.provider == "local")
+            .count();
+        assert_eq!(tts_records, shipped.len(), "TOML has unshipped TTS records");
+    }
+
+    #[test]
+    fn builtin_urls_use_reviewed_hosts_and_immutable_revisions() {
+        // builtin_document() enforces this; assert the policy itself too.
+        assert!(builtin_document().is_ok());
+        for bad in [
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+            "https://example.com/ggml-base.bin",
+            "http://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+            "https://github.com/org/repo/raw/main/model.onnx",
+        ] {
+            assert!(reviewed_builtin_url(bad).is_err(), "{bad}");
+        }
+        assert!(reviewed_builtin_url(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin"
+        )
+        .is_ok());
     }
 
     #[cfg(not(feature = "tts"))]
@@ -1055,10 +1123,28 @@ origin = { kind = "downloadable_local", filename = "replacement-base.bin", url =
         let base = effective.lookup("base").unwrap();
         assert_eq!(base.record.notes, "deployment-owned record");
         assert_eq!(base.record.aliases, ["replacement-base"]);
-        assert!(effective.lookup("base-default").is_none());
         assert!(
             matches!(base.source, CatalogueSource::Deployment { ref path } if path == &deployment_path)
         );
+
+        // A replaced record does not inherit the built-in aliases (`large`).
+        let deployment = CatalogueDocument::parse(r#"schema_version = 1
+[[model]]
+id = "large-v3"
+direction = "stt"
+provider = "local"
+tier = "supported"
+origin = { kind = "downloadable_local", filename = "replacement-large.bin", url = "https://example.invalid/replacement-large.bin", size_bytes = 42, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+"#).unwrap();
+        let builtin = EffectiveCatalogue::builtin().unwrap();
+        assert_eq!(builtin.lookup("large").unwrap().record.id, "large-v3");
+        let effective = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((deployment, deployment_path)),
+        )
+        .unwrap();
+        assert!(effective.lookup("large-v3").is_some());
+        assert!(effective.lookup("large").is_none());
     }
 
     #[test]
@@ -1123,10 +1209,8 @@ origin = { kind = "remote", wire_model = "whisper-1", capabilities = { timestamp
     #[test]
     fn alias_disable_removes_the_canonical_record() {
         let deployment = CatalogueDocument::parse(r#"schema_version = 1
-[defaults.stt]
-global = "tiny"
 [[model]]
-id = "base-default"
+id = "turbo"
 direction = "stt"
 provider = "local"
 enabled = false
@@ -1138,8 +1222,8 @@ origin = { kind = "downloadable_local", filename = "unused.bin", url = "https://
             Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
         )
         .unwrap();
-        assert!(effective.lookup("base").is_none());
-        assert!(effective.lookup("base-default").is_none());
+        assert!(effective.lookup("large-v3-turbo").is_none());
+        assert!(effective.lookup("turbo").is_none());
     }
 
     #[test]

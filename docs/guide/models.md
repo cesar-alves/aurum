@@ -123,9 +123,14 @@ Aliases: `large` → `large-v3`, `turbo` → `large-v3-turbo`.
 | Linux | `~/.cache/aurum/models/` |
 | Windows | `%LOCALAPPDATA%\aurum\cache\models\` |
 
-Most models download from Hugging Face (`ggerganov/whisper.cpp`); reviewed
-specialists may use their own immutable source revision. Prepared-local models
-never fabricate a download URL. Cross-process locks prevent double downloads.
+Most models download from Hugging Face (`ggerganov/whisper.cpp`) at an
+immutable, reviewed revision (never a moving branch such as `main`); reviewed
+specialists use their own immutable source revision. Every artifact is also
+pinned by exact size and SHA-256. Prepared-local models never fabricate a
+download URL. Cross-process locks prevent double downloads.
+
+The built-in catalogue (ids, aliases, tiers, licenses, URLs and pins) is
+reviewed as one file, `crates/aurum-core/src/catalogue/model-catalogue.v1.toml`.
 
 ## Offline / Local Only
 
