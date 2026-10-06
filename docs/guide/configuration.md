@@ -103,9 +103,9 @@ A catalogue can only set a single global default per direction, and that
 default must be a local `supported` record. Experimental and explicit-only
 records (such as the Portuguese specialists) are reachable through an explicit
 `[stt].model` / `--model` only; `language` never selects a model. The
-diagnostic catalogue digest identifies the effective records, not the
-deployment file location, so relocating an unchanged catalogue does not
-invalidate a resumable batch.
+diagnostic catalogue digest covers the effective records and defaults, not the
+deployment file location, so relocating an unchanged catalogue keeps the same
+digest.
 
 #### Deployment catalogue trust model
 
@@ -128,6 +128,11 @@ local speech-to-text models this installation may use.
   symlink is refused, not followed. Aurum reads the file once at startup and
   fails closed on any read, size, schema, or validation error. There is no
   environment-variable, discovery, or built-in fallback.
+- **Directory scope.** Only the final path component is checked for a
+  symlink; parent directories are followed. On Unix, Aurum also checks that
+  the opened file is the one it inspected (same device and inode); Windows
+  has no such check. Keep the catalogue in a directory that only the operator
+  can write to.
 
 The embedded catalogue is held to a stricter rule. Its URLs may only use the
 reviewed hosts (`huggingface.co`, plus GitHub release assets), and every
