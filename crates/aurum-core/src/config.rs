@@ -79,7 +79,7 @@ pub struct ConfigFile {
     /// Named provider credentials and vendor options.
     #[serde(default)]
     pub providers: ProvidersFileSection,
-    /// Explicit deployment catalogue replacement. There is intentionally no
+    /// Explicit deployment catalogue (narrowing only). There is intentionally no
     /// environment variable or discovery fallback for this trusted input.
     #[serde(default)]
     pub catalogue: CatalogueSection,
@@ -1074,6 +1074,7 @@ impl Config {
                 }
                 .into());
             }
+            self.check_local_stt_model_allowed(&m)?;
             return Ok(m);
         }
         match self.provider.as_str() {
@@ -1095,32 +1096,9 @@ impl Config {
                 // default (`base`). Language is a decoding hint only and never
                 // selects weights, so experimental specialists stay explicit.
                 if let Some(model) = self.configured_stt_model.as_deref() {
-                    if self
-                        .catalogue
-                        .resolve(crate::catalogue::Direction::Stt, None, Some(model))
-                        .is_ok()
-                    {
-                        // Keep the configured spelling (e.g. an alias such as
-                        // `turbo`), exactly as before the catalogue existed.
-                        return Ok(model.to_string());
-                    }
-                    if self.catalogue_path.is_some() {
-                        return Err(UserError::InvalidModel {
-                            model: model.to_string(),
-                            available: self
-                                .catalogue
-                                .records()
-                                .iter()
-                                .filter(|record| {
-                                    record.record.direction == crate::catalogue::Direction::Stt
-                                        && record.record.provider.eq_ignore_ascii_case("local")
-                                })
-                                .map(|record| record.record.id.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        }
-                        .into());
-                    }
+                    self.check_local_stt_model_allowed(model)?;
+                    // Keep the configured spelling (e.g. an alias such as
+                    // `turbo`), exactly as before the catalogue existed.
                     return Ok(model.to_string());
                 }
                 Ok(self
@@ -1135,6 +1113,35 @@ impl Config {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_LOCAL_MODEL.to_string())),
         }
+    }
+
+    /// With a deployment catalogue, a local STT model must be one of its
+    /// effective records however it was chosen (`--model`, `[stt].model`, a
+    /// profile, batch or the SDK), so a disabled built-in stays unusable.
+    /// Without one, behaviour is unchanged.
+    pub fn check_local_stt_model_allowed(&self, model: &str) -> Result<()> {
+        if self.provider != "local" || self.catalogue_path.is_none() {
+            return Ok(());
+        }
+        if self
+            .catalogue
+            .resolve(crate::catalogue::Direction::Stt, Some(model), None)
+            .is_ok()
+        {
+            return Ok(());
+        }
+        Err(UserError::InvalidModel {
+            model: model.to_string(),
+            available: self
+                .catalogue
+                .records()
+                .iter()
+                .filter(|record| record.record.direction == crate::catalogue::Direction::Stt)
+                .map(|record| record.record.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+        .into())
     }
 
     fn default_model_for_provider(&self) -> String {
@@ -2030,28 +2037,18 @@ speaking_rate = 1.25
     fn explicit_catalogue_path_loads_or_fails_closed() {
         let dir = tempdir().unwrap();
         let deployment = dir.path().join("catalogue.toml");
-        fs::write(
-            &deployment,
-            r#"schema_version = 1
-[[model]]
-id = "deployment-tiny"
-direction = "stt"
-provider = "local"
-tier = "supported"
-origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = "https://example.invalid/deployment-tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#,
-        ).unwrap();
+        fs::write(&deployment, MINIMAL_CATALOGUE).unwrap();
         let config = dir.path().join("config.toml");
         fs::write(&config, format!("[catalogue]\npath = {:?}\n", deployment)).unwrap();
         let cfg = Config::load_from_required(&config).unwrap();
-        assert!(cfg.catalogue.lookup("deployment-tiny").is_some());
+        assert!(cfg.catalogue.lookup("tiny").is_none());
         assert_eq!(cfg.catalogue_path.as_deref(), Some(deployment.as_path()));
         let diagnostic = cfg.effective_diagnostic();
         assert_eq!(diagnostic.catalogue_digest.len(), 64);
-        assert!(diagnostic.catalogue_records.iter().any(|record| {
-            record.id == "deployment-tiny"
-                && matches!(record.source, CatalogueSource::Deployment { .. })
-        }));
+        assert!(diagnostic
+            .catalogue_records
+            .iter()
+            .all(|record| { record.id != "tiny" && record.source == CatalogueSource::Builtin }));
 
         fs::write(
             &config,
@@ -2061,13 +2058,15 @@ origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = 
         assert!(Config::load_from_required(&config).is_err());
     }
 
+    /// A narrowing deployment: it only disables the built-in `tiny`.
     const MINIMAL_CATALOGUE: &str = r#"schema_version = 1
 [[model]]
-id = "deployment-tiny"
+id = "tiny"
 direction = "stt"
 provider = "local"
+enabled = false
 tier = "supported"
-origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = "https://example.invalid/deployment-tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://example.invalid/tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 "#;
 
     #[test]
@@ -2082,7 +2081,7 @@ origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = 
 
         // Process cwd is irrelevant: only the config file location matters.
         let cfg = Config::load_from_required(&config).unwrap();
-        assert!(cfg.catalogue.lookup("deployment-tiny").is_some());
+        assert!(cfg.catalogue.lookup("tiny").is_none());
         let resolved = cfg.catalogue_path.as_deref().unwrap();
         assert!(resolved.is_absolute());
         assert_eq!(
@@ -2134,15 +2133,7 @@ origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = 
     fn deployment_catalogue_cannot_fall_back_to_removed_local_model() {
         let dir = tempdir().unwrap();
         let catalogue = dir.path().join("catalogue.toml");
-        fs::write(&catalogue, r#"schema_version = 1
-[[model]]
-id = "tiny"
-direction = "stt"
-provider = "local"
-enabled = false
-tier = "supported"
-origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://example.invalid/tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
+        fs::write(&catalogue, MINIMAL_CATALOGUE).unwrap();
         let config = dir.path().join("config.toml");
         fs::write(
             &config,
@@ -2154,6 +2145,32 @@ origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://ex
         .unwrap();
         let cfg = Config::load_from_required(&config).unwrap();
         assert!(cfg.resolve_model(false).is_err());
+    }
+
+    #[test]
+    fn explicit_model_cannot_select_a_disabled_model() {
+        let dir = tempdir().unwrap();
+        let catalogue = dir.path().join("catalogue.toml");
+        fs::write(&catalogue, MINIMAL_CATALOGUE).unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, format!("[catalogue]\npath = {:?}\n", catalogue)).unwrap();
+        let mut cfg = Config::load_from_required(&config).unwrap();
+        // `--model tiny` (and the always-explicit live session path).
+        cfg.model = Some("tiny".into());
+        let err = cfg.resolve_model(true).unwrap_err().to_string();
+        assert!(err.contains("tiny"), "{err}");
+        assert!(cfg.check_local_stt_model_allowed("TINY").is_err());
+        // Other built-ins and their aliases stay selectable.
+        cfg.model = Some("turbo".into());
+        assert_eq!(cfg.resolve_model(true).unwrap(), "turbo");
+        // Remote providers are not governed by the local catalogue.
+        cfg.provider = "openrouter".into();
+        assert!(cfg.check_local_stt_model_allowed("tiny").is_ok());
+
+        // Without a deployment catalogue, behaviour is unchanged.
+        let mut builtin = Config::load_from(&dir.path().join("missing.toml")).unwrap();
+        builtin.model = Some("tiny".into());
+        assert_eq!(builtin.resolve_model(true).unwrap(), "tiny");
     }
 
     #[test]

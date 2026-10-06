@@ -1002,6 +1002,7 @@ async fn run_transcribe(cli: TranscribeArgs) -> Result<()> {
                 res.profile, res.model, res.evidence_version
             );
         }
+        cfg.check_local_stt_model_allowed(&res.model)?;
         cfg.model = Some(res.model.clone());
         res.model
     } else {
@@ -1366,6 +1367,7 @@ async fn run_cache_cmd(cli: CacheCli) -> Result<()> {
         }
         CacheCommands::Repair { model, local_only } => {
             use aurum_core::model::{ensure_model_with_options, EnsureModelOptions};
+            cfg.check_local_stt_model_allowed(&model)?;
             let path = ensure_model_with_options(
                 &cfg.cache_dir,
                 &model,

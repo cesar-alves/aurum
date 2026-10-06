@@ -144,6 +144,7 @@ pub async fn run_batch(cli: BatchCli) -> Result<()> {
     } else {
         cfg.resolve_model(false)?
     };
+    cfg.check_local_stt_model_allowed(&model)?;
     cfg.model = Some(model.clone());
 
     let format = OutputFormat::parse(&cfg.output)?;
