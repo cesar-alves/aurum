@@ -360,6 +360,7 @@ impl EffectiveCatalogue {
             merge_defaults(&mut defaults.tts, deployment.defaults.tts);
         }
         let records: Vec<_> = records.into_values().collect();
+        reject_effective_name_collisions(&records)?;
         // Source paths are diagnostic metadata, not model identity. Moving an
         // identical deployment file must not invalidate resumable batches.
         let digest = digest(
@@ -440,11 +441,51 @@ impl EffectiveCatalogue {
             (Direction::Tts, &self.defaults.tts),
         ] {
             if let Some(id) = &defaults.global {
-                validate_effective_default(id, direction, &self.records)?;
+                self.validate_effective_default(id, direction)?;
             }
         }
         Ok(())
     }
+    /// Validate a default through the same alias-aware lookup `resolve()` uses,
+    /// so the record that is checked is always the record that is selected.
+    fn validate_effective_default(&self, id: &str, direction: Direction) -> Result<()> {
+        let Some(entry) = self
+            .lookup_direction(id, direction)
+            .filter(|entry| entry.record.provider == "local")
+        else {
+            return Err(config_error(format!(
+                "{direction:?} default '{id}' does not resolve to an enabled compatible record"
+            )));
+        };
+        // Experimental and explicit-only records are reachable by explicit id only;
+        // a catalogue (built-in or deployment) can never make one implicit.
+        if entry.record.tier != SupportTier::Supported {
+            return Err(config_error(format!(
+                "{direction:?} default '{id}' must be a supported record, not {:?}",
+                entry.record.tier
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Every effective id and alias must name exactly one record. Each document
+/// checks itself; this catches a deployment name that shadows a built-in one,
+/// which would otherwise let lookup order decide which weights are selected.
+fn reject_effective_name_collisions(records: &[EffectiveRecord]) -> Result<()> {
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
+    for entry in records {
+        let record = &entry.record;
+        for name in std::iter::once(&record.id).chain(&record.aliases) {
+            if let Some(owner) = owners.insert(name.to_ascii_lowercase(), &record.id) {
+                return Err(config_error(format!(
+                    "catalogue name '{name}' is used by both '{owner}' and '{}'",
+                    record.id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The embedded v1 document is the complete built-in catalogue. Nothing is
@@ -473,30 +514,6 @@ fn merge_defaults(target: &mut DirectionDefaults, incoming: DirectionDefaults) {
     if incoming.global.is_some() {
         target.global = incoming.global;
     }
-}
-fn validate_effective_default(
-    id: &str,
-    direction: Direction,
-    records: &[EffectiveRecord],
-) -> Result<()> {
-    let Some(record) = records.iter().find(|record| {
-        record.record.direction == direction
-            && record.record.id.eq_ignore_ascii_case(id)
-            && record.record.provider == "local"
-    }) else {
-        return Err(config_error(format!(
-            "{direction:?} default '{id}' does not resolve to an enabled compatible record"
-        )));
-    };
-    // Experimental and explicit-only records are reachable by explicit id only;
-    // a catalogue (built-in or deployment) can never make one implicit.
-    if record.record.tier != SupportTier::Supported {
-        return Err(config_error(format!(
-            "{direction:?} default '{id}' must be a supported record, not {:?}",
-            record.record.tier
-        )));
-    }
-    Ok(())
 }
 fn validate_id(value: &str, field: &str) -> Result<()> {
     let valid = !value.is_empty()
@@ -1174,5 +1191,44 @@ origin = { kind = "downloadable_local", filename = "base.bin", url = "https://ex
         )
         .unwrap();
         assert_eq!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn effective_names_cannot_shadow_another_record() {
+        // An experimental record aliased as `base` would sort before the real
+        // `base` and become the implicit default; it must be rejected instead.
+        let mut records = EffectiveCatalogue::builtin().unwrap().records;
+        let mut shadow = records
+            .iter()
+            .find(|entry| entry.record.id == "medium-ptbr-q5_0")
+            .unwrap()
+            .clone();
+        shadow.record.id = "aaa-shadow".into();
+        shadow.record.aliases = vec!["BASE".into()];
+        records.push(shadow);
+        let err = reject_effective_name_collisions(&records)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("used by both"), "{err}");
+        assert!(
+            reject_effective_name_collisions(EffectiveCatalogue::builtin().unwrap().records())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn default_named_by_alias_is_validated_as_the_resolved_record() {
+        // `large` is an alias of the supported `large-v3`.
+        let deployment =
+            CatalogueDocument::parse("schema_version = 1\n[defaults.stt]\nglobal = \"large\"\n")
+                .unwrap();
+        let effective = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
+        )
+        .unwrap();
+        let resolved = effective.resolve(Direction::Stt, None, None).unwrap();
+        assert_eq!(resolved.record.id, "large-v3");
+        assert_eq!(resolved.record.tier, SupportTier::Supported);
     }
 }
