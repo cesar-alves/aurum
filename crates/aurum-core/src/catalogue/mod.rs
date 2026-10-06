@@ -51,10 +51,10 @@ pub struct Defaults {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectionDefaults {
+    /// The only implicit selection. Language never selects a model: experimental
+    /// specialists are reachable only through an explicit model id.
     #[serde(default)]
     pub global: Option<String>,
-    #[serde(default)]
-    pub language: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -229,10 +229,6 @@ impl CatalogueDocument {
             if let Some(id) = &defaults.global {
                 validate_id(id, "default model id")?;
             }
-            for (language, id) in &defaults.language {
-                validate_language(language)?;
-                validate_id(id, "default model id")?;
-            }
         }
         Ok(())
     }
@@ -272,12 +268,8 @@ impl EffectiveCatalogue {
             })
             .collect();
         let mut defaults = builtin.defaults;
-        canonicalize_defaults(&mut defaults.stt)?;
-        canonicalize_defaults(&mut defaults.tts)?;
-        if let Some((mut deployment, path)) = deployment {
+        if let Some((deployment, path)) = deployment {
             deployment.validate()?;
-            canonicalize_defaults(&mut deployment.defaults.stt)?;
-            canonicalize_defaults(&mut deployment.defaults.tts)?;
             // Deployment records replace the entire matching record; nothing is inherited.
             for record in deployment.records {
                 let key = record.id.to_ascii_lowercase();
@@ -311,9 +303,10 @@ impl EffectiveCatalogue {
                     records.remove(&alias_key);
                 }
             }
-            // A non-empty deployment defaults section is explicit; empty sides retain built-ins.
-            merge_defaults(&mut defaults.stt, deployment.defaults.stt)?;
-            merge_defaults(&mut defaults.tts, deployment.defaults.tts)?;
+            // An explicit deployment global replaces the built-in one; an absent
+            // global retains the built-in default.
+            merge_defaults(&mut defaults.stt, deployment.defaults.stt);
+            merge_defaults(&mut defaults.tts, deployment.defaults.tts);
         }
         let records: Vec<_> = records.into_values().collect();
         let effective = Self { records, defaults };
@@ -354,12 +347,14 @@ impl EffectiveCatalogue {
                     .any(|alias| alias.eq_ignore_ascii_case(key))
         })
     }
+    /// Resolve a model: CLI id, then configured id, then the global default.
+    /// Language is deliberately not an input: it is a decoding hint only and
+    /// must never change which weights are selected or downloaded.
     pub fn resolve(
         &self,
         direction: Direction,
         cli: Option<&str>,
         configured: Option<&str>,
-        language: &str,
     ) -> Result<&EffectiveRecord> {
         if let Some(id) = [cli, configured].into_iter().flatten().next() {
             return self.lookup_direction(id, direction).ok_or_else(|| {
@@ -367,21 +362,6 @@ impl EffectiveCatalogue {
                     "unknown or incompatible {direction:?} model '{id}'"
                 ))
             });
-        }
-        if !language.eq_ignore_ascii_case("auto") {
-            let normalized = normalize_language(language)?;
-            if let Some(id) = self.defaults_for(direction).language.get(&normalized) {
-                return self
-                    .lookup_direction(id, direction)
-                    .ok_or_else(|| config_error(format!("default '{id}' is unavailable")));
-            }
-            if let Some(base) = normalized.split('-').next() {
-                if let Some(id) = self.defaults_for(direction).language.get(base) {
-                    return self
-                        .lookup_direction(id, direction)
-                        .ok_or_else(|| config_error(format!("default '{id}' is unavailable")));
-                }
-            }
         }
         let id = self
             .defaults_for(direction)
@@ -408,9 +388,6 @@ impl EffectiveCatalogue {
             (Direction::Tts, &self.defaults.tts),
         ] {
             if let Some(id) = &defaults.global {
-                validate_effective_default(id, direction, &self.records)?;
-            }
-            for id in defaults.language.values() {
                 validate_effective_default(id, direction, &self.records)?;
             }
         }
@@ -658,49 +635,35 @@ fn push_remote(
     });
 }
 
-fn merge_defaults(target: &mut DirectionDefaults, incoming: DirectionDefaults) -> Result<()> {
+fn merge_defaults(target: &mut DirectionDefaults, incoming: DirectionDefaults) {
     if incoming.global.is_some() {
         target.global = incoming.global;
     }
-    for (language, id) in incoming.language {
-        let canonical = normalize_language(&language)?;
-        if target.language.insert(canonical, id).is_some() {
-            // Replacement is intentional for deployment values; normalized
-            // duplicates inside one document are rejected by canonicalization.
-        }
-    }
-    Ok(())
-}
-fn canonicalize_defaults(defaults: &mut DirectionDefaults) -> Result<()> {
-    let mut normalized = BTreeMap::new();
-    for (language, id) in std::mem::take(&mut defaults.language) {
-        let key = normalize_language(&language)?;
-        if normalized.insert(key.clone(), id).is_some() {
-            return Err(config_error(format!(
-                "duplicate normalized default language '{key}'"
-            )));
-        }
-    }
-    defaults.language = normalized;
-    Ok(())
 }
 fn validate_effective_default(
     id: &str,
     direction: Direction,
     records: &[EffectiveRecord],
 ) -> Result<()> {
-    if records.iter().any(|record| {
+    let Some(record) = records.iter().find(|record| {
         record.record.direction == direction
             && record.record.id.eq_ignore_ascii_case(id)
             && record.record.provider.eq_ignore_ascii_case("local")
             && !matches!(record.record.origin, Origin::Remote { .. })
-    }) {
-        Ok(())
-    } else {
-        Err(config_error(format!(
+    }) else {
+        return Err(config_error(format!(
             "{direction:?} default '{id}' does not resolve to an enabled compatible record"
-        )))
+        )));
+    };
+    // Experimental and explicit-only records are reachable by explicit id only;
+    // a catalogue (built-in or deployment) can never make one implicit.
+    if record.record.tier != SupportTier::Supported {
+        return Err(config_error(format!(
+            "{direction:?} default '{id}' must be a supported record, not {:?}",
+            record.record.tier
+        )));
     }
+    Ok(())
 }
 fn validate_id(value: &str, field: &str) -> Result<()> {
     let valid = !value.is_empty()
@@ -957,40 +920,95 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             .all(|record| { record.record.direction == Direction::Stt }));
         assert_eq!(
             catalogue
-                .resolve(Direction::Stt, None, None, "pt-BR")
+                .resolve(Direction::Stt, None, None)
+                .unwrap()
+                .record
+                .id,
+            "base"
+        );
+    }
+    #[test]
+    fn resolver_prefers_cli_then_configured_then_global() {
+        let catalogue = EffectiveCatalogue::builtin().unwrap();
+        assert_eq!(
+            catalogue
+                .resolve(Direction::Stt, Some("tiny"), Some("small"))
+                .unwrap()
+                .record
+                .id,
+            "tiny"
+        );
+        assert_eq!(
+            catalogue
+                .resolve(Direction::Stt, None, Some("small"))
+                .unwrap()
+                .record
+                .id,
+            "small"
+        );
+        assert_eq!(
+            catalogue
+                .resolve(Direction::Stt, None, None)
+                .unwrap()
+                .record
+                .id,
+            "base"
+        );
+        // Experimental specialists stay reachable by explicit id.
+        assert_eq!(
+            catalogue
+                .resolve(Direction::Stt, None, Some("medium-ptbr-q5_0"))
                 .unwrap()
                 .record
                 .id,
             "medium-ptbr-q5_0"
         );
     }
+
     #[test]
-    fn resolver_prefers_exact_then_base_then_global() {
+    fn builtin_defaults_are_supported_local_records() {
         let catalogue = EffectiveCatalogue::builtin().unwrap();
-        assert_eq!(
-            catalogue
-                .resolve(Direction::Stt, None, None, "pt-BR")
-                .unwrap()
-                .record
-                .id,
-            "medium-ptbr-q5_0"
-        );
-        assert_eq!(
-            catalogue
-                .resolve(Direction::Stt, None, None, "pt")
-                .unwrap()
-                .record
-                .id,
-            "base"
-        );
-        assert_eq!(
-            catalogue
-                .resolve(Direction::Stt, Some("tiny"), Some("base"), "pt-BR")
-                .unwrap()
-                .record
-                .id,
-            "tiny"
-        );
+        let stt = catalogue.resolve(Direction::Stt, None, None).unwrap();
+        assert_eq!(stt.record.id, "base");
+        assert_eq!(stt.record.tier, SupportTier::Supported);
+    }
+
+    #[test]
+    fn language_defaults_are_rejected_by_the_schema() {
+        let deployment = "schema_version = 1\n[defaults.stt.language]\npt-BR = \"tiny\"\n";
+        assert!(CatalogueDocument::parse(deployment).is_err());
+    }
+
+    #[test]
+    fn experimental_records_cannot_be_defaults() {
+        for id in ["medium-ptbr-q5_0", "large-v3-ptpt-q5_0", "large-v3-q5_0"] {
+            let deployment = CatalogueDocument::parse(&format!(
+                "schema_version = 1\n[defaults.stt]\nglobal = \"{id}\"\n"
+            ))
+            .unwrap();
+            let err = EffectiveCatalogue::from_documents(
+                builtin_document().unwrap(),
+                Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("must be a supported record"), "{id}: {err}");
+        }
+        let explicit_only = CatalogueDocument::parse(r#"schema_version = 1
+[defaults.stt]
+global = "pinned-only"
+[[model]]
+id = "pinned-only"
+direction = "stt"
+provider = "local"
+tier = "explicit_only"
+origin = { kind = "downloadable_local", filename = "pinned-only.bin", url = "https://example.invalid/pinned-only.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+"#).unwrap();
+        assert!(EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((explicit_only, PathBuf::from("/tmp/deploy.toml"))),
+        )
+        .is_err());
     }
     #[test]
     fn deployment_replaces_and_disable_removes_aliases() {
@@ -1015,7 +1033,10 @@ origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://ex
     #[test]
     fn deployment_replacement_has_no_inherited_aliases_or_metadata() {
         let deployment_path = PathBuf::from("/tmp/deployment-catalogue.toml");
+        // `base` becomes experimental here, so the default must move off it.
         let deployment = CatalogueDocument::parse(r#"schema_version = 1
+[defaults.stt]
+global = "tiny"
 [[model]]
 id = "base"
 aliases = ["replacement-base"]
@@ -1061,11 +1082,10 @@ origin = { kind = "downloadable_local", filename = "changed-base.bin", url = "ht
     }
 
     #[test]
-    fn deployment_defaults_can_target_builtin_and_normalize_language_keys() {
-        let deployment = CatalogueDocument::parse(
-            "schema_version = 1\n[defaults.stt.language]\npt-br = \"tiny\"\n",
-        )
-        .unwrap();
+    fn deployment_default_can_target_builtin_record() {
+        let deployment =
+            CatalogueDocument::parse("schema_version = 1\n[defaults.stt]\nglobal = \"tiny\"\n")
+                .unwrap();
         let effective = EffectiveCatalogue::from_documents(
             builtin_document().unwrap(),
             Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
@@ -1073,7 +1093,7 @@ origin = { kind = "downloadable_local", filename = "changed-base.bin", url = "ht
         .unwrap();
         assert_eq!(
             effective
-                .resolve(Direction::Stt, None, None, "pt-BR")
+                .resolve(Direction::Stt, None, None)
                 .unwrap()
                 .record
                 .id,

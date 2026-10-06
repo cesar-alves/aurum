@@ -1086,17 +1086,18 @@ impl Config {
                 }
             }
             "local" => {
-                // The embedded catalogue owns automatic language/default choice.
-                // Keep legacy explicit IDs working while the remaining static
-                // records are migrated into the v1 review file.
+                // Model identity is `[stt].model` or the catalogue's global
+                // default (`base`). Language is a decoding hint only and never
+                // selects weights, so experimental specialists stay explicit.
                 if let Some(model) = self.configured_stt_model.as_deref() {
-                    if let Ok(record) = self.catalogue.resolve(
-                        crate::catalogue::Direction::Stt,
-                        Some(model),
-                        None,
-                        &self.language,
-                    ) {
-                        return Ok(record.record.id.clone());
+                    if self
+                        .catalogue
+                        .resolve(crate::catalogue::Direction::Stt, None, Some(model))
+                        .is_ok()
+                    {
+                        // Keep the configured spelling (e.g. an alias such as
+                        // `turbo`), exactly as before the catalogue existed.
+                        return Ok(model.to_string());
                     }
                     if self.catalogue_path.is_some() {
                         return Err(UserError::InvalidModel {
@@ -1119,7 +1120,7 @@ impl Config {
                 }
                 Ok(self
                     .catalogue
-                    .resolve(crate::catalogue::Direction::Stt, None, None, &self.language)?
+                    .resolve(crate::catalogue::Direction::Stt, None, None)?
                     .record
                     .id
                     .clone())
@@ -1652,21 +1653,31 @@ trust = "verified"
     }
 
     #[test]
-    fn local_catalogue_language_defaults_preserve_explicit_model_precedence() {
+    fn language_never_selects_the_local_model() {
         let dir = tempdir().unwrap();
         let missing = dir.path().join("missing.toml");
         let mut cfg = Config::load_from(&missing).unwrap();
-        cfg.language = "pt-BR".into();
-        assert_eq!(cfg.resolve_model(false).unwrap(), "medium-ptbr-q5_0");
-        cfg.language = "pt-PT".into();
-        assert_eq!(cfg.resolve_model(false).unwrap(), "large-v3-ptpt-q5_0");
-        cfg.language = "pt".into();
+        for language in ["auto", "pt", "pt-BR", "pt-PT", "pt-br"] {
+            cfg.language = language.into();
+            assert_eq!(cfg.resolve_model(false).unwrap(), "base", "{language}");
+        }
+
+        let path = dir.path().join("language-only.toml");
+        fs::write(&path, "[stt]\nlanguage = \"pt-PT\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.resolve_model(false).unwrap(), "base");
 
-        let path = dir.path().join("explicit.toml");
-        fs::write(&path, "[stt]\nmodel = \"tiny\"\nlanguage = \"pt-BR\"\n").unwrap();
-        let cfg = Config::load_from(&path).unwrap();
-        assert_eq!(cfg.resolve_model(false).unwrap(), "tiny");
+        // Explicit model ids still win, including the experimental specialists.
+        for model in ["tiny", "medium-ptbr-q5_0", "large-v3-ptpt-q5_0"] {
+            let path = dir.path().join("explicit.toml");
+            fs::write(
+                &path,
+                format!("[stt]\nmodel = \"{model}\"\nlanguage = \"pt-BR\"\n"),
+            )
+            .unwrap();
+            let cfg = Config::load_from(&path).unwrap();
+            assert_eq!(cfg.resolve_model(false).unwrap(), model);
+        }
     }
 
     #[test]
