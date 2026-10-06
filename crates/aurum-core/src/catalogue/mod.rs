@@ -355,14 +355,18 @@ impl EffectiveCatalogue {
         }
         let records: Vec<_> = records.into_values().collect();
         reject_effective_name_collisions(&records)?;
-        // Source paths are diagnostic metadata, not model identity. Moving an
-        // identical deployment file must not invalidate resumable batches.
-        let digest = digest(
-            &records
-                .iter()
-                .map(|entry| &entry.record)
-                .collect::<Vec<_>>(),
-        )?;
+        // The digest covers what selection depends on: the records and the
+        // defaults. Source paths are diagnostic metadata, not model identity,
+        // so moving an identical deployment file does not change it.
+        #[derive(Serialize)]
+        struct DigestInput<'a> {
+            records: Vec<&'a CatalogueRecord>,
+            defaults: &'a Defaults,
+        }
+        let digest = digest(&DigestInput {
+            records: records.iter().map(|entry| &entry.record).collect(),
+            defaults: &defaults,
+        })?;
         let effective = Self {
             records,
             defaults,
@@ -526,8 +530,8 @@ fn builtin_document() -> Result<CatalogueDocument> {
         document
     };
     for record in &document.records {
-        for url in record_urls(record) {
-            reviewed_builtin_url(url)?;
+        for (url, kind) in record_urls(record) {
+            reviewed_builtin_url(url, kind)?;
         }
     }
     Ok(document)
@@ -646,17 +650,30 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
         }
     }
 }
-fn record_urls(record: &CatalogueRecord) -> Vec<&str> {
+/// Whether a URL is fetched by Aurum or only names a preparation source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlKind {
+    Download,
+    PreparationSource,
+}
+fn record_urls(record: &CatalogueRecord) -> Vec<(&str, UrlKind)> {
     match &record.origin {
-        Origin::DownloadableLocal { url, .. } => vec![url.as_str()],
-        Origin::PreparedLocal { source_url, .. } => vec![source_url.as_str()],
-        Origin::TtsPack { files, .. } => files.iter().map(|file| file.url.as_str()).collect(),
+        Origin::DownloadableLocal { url, .. } => vec![(url.as_str(), UrlKind::Download)],
+        Origin::PreparedLocal { source_url, .. } => {
+            vec![(source_url.as_str(), UrlKind::PreparationSource)]
+        }
+        Origin::TtsPack { files, .. } => files
+            .iter()
+            .map(|file| (file.url.as_str(), UrlKind::Download))
+            .collect(),
     }
 }
 /// Built-in records may only point at the reviewed hosts already used by
 /// `model::` / `tts::catalogue`, and Hugging Face URLs must name an immutable
-/// 40-hex revision rather than a moving branch such as `main`.
-fn reviewed_builtin_url(url: &str) -> Result<()> {
+/// 40-hex revision rather than a moving branch such as `main`. Downloads must
+/// use `resolve/` (a file); `tree/` (a repository view) only names the source
+/// of a prepared-local artifact.
+fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
     let parsed = url::Url::parse(url).map_err(|_| config_error(format!("invalid URL '{url}'")))?;
     let segments: Vec<&str> = parsed
         .path_segments()
@@ -668,7 +685,8 @@ fn reviewed_builtin_url(url: &str) -> Result<()> {
             // huggingface.co/{org}/{repo}/(resolve|tree)/{revision}/...
             Some("huggingface.co") => {
                 segments.len() >= 4
-                    && matches!(segments[2], "resolve" | "tree")
+                    && (segments[2] == "resolve"
+                        || (segments[2] == "tree" && kind == UrlKind::PreparationSource))
                     && is_revision(segments[3])
             }
             // github.com/{org}/{repo}/releases/download/{tag}/{asset}
@@ -930,12 +948,34 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             "http://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
             "https://github.com/org/repo/raw/main/model.onnx",
         ] {
-            assert!(reviewed_builtin_url(bad).is_err(), "{bad}");
+            assert!(
+                reviewed_builtin_url(bad, UrlKind::Download).is_err(),
+                "{bad}"
+            );
         }
-        assert!(reviewed_builtin_url(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin"
+        let resolve = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin";
+        assert!(reviewed_builtin_url(resolve, UrlKind::Download).is_ok());
+        // A `tree/` URL is a repository view: it may name a preparation
+        // source, but it is never something Aurum downloads.
+        let tree = "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
+        assert!(reviewed_builtin_url(tree, UrlKind::Download).is_err());
+        assert!(reviewed_builtin_url(tree, UrlKind::PreparationSource).is_ok());
+    }
+
+    #[test]
+    fn effective_digest_covers_defaults() {
+        let builtin = EffectiveCatalogue::builtin().unwrap();
+        let deployment =
+            CatalogueDocument::parse("schema_version = 1\n[defaults.stt]\nglobal = \"tiny\"\n")
+                .unwrap();
+        let moved = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
         )
-        .is_ok());
+        .unwrap();
+        // Same records, different default: a different effective catalogue.
+        assert_eq!(builtin.records().len(), moved.records().len());
+        assert_ne!(builtin.digest(), moved.digest());
     }
 
     #[cfg(not(feature = "tts"))]
