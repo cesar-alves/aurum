@@ -9,9 +9,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const CATALOGUE_SCHEMA_VERSION: u32 = 1;
+/// Upper bound for a deployment catalogue file. The embedded catalogue is
+/// ~30 KiB; anything near this limit is not a reviewed model list.
+pub const MAX_CATALOGUE_BYTES: u64 = 1024 * 1024;
 const BUILTIN_TOML: &str = include_str!("model-catalogue.v1.toml");
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -156,10 +160,61 @@ impl CatalogueDocument {
         Ok(doc)
     }
 
+    /// Load a deployment catalogue: a trusted, operator-owned input. The path
+    /// must be absolute and name a regular file (a final symlink is refused,
+    /// not followed) no larger than [`MAX_CATALOGUE_BYTES`].
     pub fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path).map_err(|e| UserError::InvalidConfig {
-            reason: format!("cannot read catalogue {}: {e}", path.display()),
-        })?;
+        let read_error = |e: std::io::Error| {
+            config_error(format!("cannot read catalogue {}: {e}", path.display()))
+        };
+        if !path.is_absolute() {
+            return Err(config_error(format!(
+                "catalogue path must be absolute, got '{}'",
+                path.display()
+            )));
+        }
+        let checked = fs::symlink_metadata(path).map_err(read_error)?;
+        if checked.file_type().is_symlink() {
+            return Err(config_error(format!(
+                "refusing catalogue {} because it is a symlink; point [catalogue].path at the regular file",
+                path.display()
+            )));
+        }
+        if !checked.is_file() {
+            return Err(config_error(format!(
+                "catalogue {} is not a regular file",
+                path.display()
+            )));
+        }
+        let file = fs::File::open(path).map_err(read_error)?;
+        let opened = file.metadata().map_err(read_error)?;
+        // The handle must be the file that was checked, not a swapped-in path.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (checked.dev(), checked.ino()) != (opened.dev(), opened.ino()) {
+                return Err(config_error(format!(
+                    "catalogue {} changed while it was being opened",
+                    path.display()
+                )));
+            }
+        }
+        if !opened.is_file() || opened.len() > MAX_CATALOGUE_BYTES {
+            return Err(config_error(format!(
+                "catalogue {} must be a regular file of at most {MAX_CATALOGUE_BYTES} bytes",
+                path.display()
+            )));
+        }
+        let mut text = String::new();
+        file.take(MAX_CATALOGUE_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(read_error)?;
+        if text.len() as u64 > MAX_CATALOGUE_BYTES {
+            return Err(config_error(format!(
+                "catalogue {} exceeds {MAX_CATALOGUE_BYTES} bytes",
+                path.display()
+            )));
+        }
         Self::parse(&text)
     }
 

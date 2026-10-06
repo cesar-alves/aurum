@@ -93,6 +93,7 @@ provider = "rules"         # rules | openrouter
 # is local (`provider = "local"`): remote models are chosen with `--provider`
 # plus credentials and are never catalogue records.
 # The path is explicit: Aurum never discovers, fetches, or falls back from it.
+# A relative path resolves against this config file's directory (not the cwd).
 # [catalogue]
 # path = "/absolute/path/to/model-catalogue.toml"
 ```
@@ -107,6 +108,30 @@ records (such as the Portuguese specialists) are reachable through an explicit
 diagnostic catalogue digest identifies the effective records, not the
 deployment file location, so relocating an unchanged catalogue does not
 invalidate a resumable batch.
+
+#### Deployment catalogue trust model
+
+`[catalogue].path` is a **trusted, operator-owned input**. Treat it like
+shipping model weights, because its records decide which hosts Aurum downloads
+weights from:
+
+- **Allowlist semantics.** Every `url` in a deployment catalogue is an
+  operator-approved download origin. Aurum requires HTTPS without embedded
+  credentials, plus an exact size and SHA-256 pin for every artifact, but it
+  does not restrict the host. Only point the path at files that you review and
+  control.
+- **Path resolution.** A relative path resolves against the directory of the
+  config file that names it. It never resolves against the process working
+  directory, and it is an error when no config file is in use. An absolute
+  path is recommended.
+- **File policy.** The target must be a regular file of at most 1 MiB. A
+  symlink is refused, not followed. Aurum reads the file once at startup and
+  fails closed on any read, size, schema, or validation error. There is no
+  environment-variable, discovery, or built-in fallback.
+
+The embedded catalogue is held to a stricter rule. Its URLs may only use the
+reviewed hosts (`huggingface.co`, plus GitHub release assets), and every
+Hugging Face URL must name an immutable revision.
 
 ### `local_only`
 

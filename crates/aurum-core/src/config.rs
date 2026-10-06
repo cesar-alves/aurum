@@ -906,7 +906,12 @@ impl Config {
     fn from_parts(file: Option<ConfigFile>, config_path: Option<PathBuf>) -> Result<Self> {
         let file = file.unwrap_or_default();
 
-        let catalogue_path = file.catalogue.path.clone();
+        let catalogue_path = file
+            .catalogue
+            .path
+            .as_deref()
+            .map(|path| resolve_catalogue_path(path, config_path.as_deref()))
+            .transpose()?;
         let catalogue = match &catalogue_path {
             Some(path) => EffectiveCatalogue::load_deployment(path)?,
             None => EffectiveCatalogue::builtin()?,
@@ -1152,6 +1157,42 @@ struct MergedOpenRouter {
 }
 
 /// Resolve `[stt]` (or built-in defaults).
+/// `[catalogue].path` is a trusted operator input. A relative path is resolved
+/// against the directory of the config file that names it (never the process
+/// cwd), so the same config resolves identically wherever `aurum` runs.
+fn resolve_catalogue_path(path: &Path, config_path: Option<&Path>) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(UserError::InvalidConfig {
+            reason: "[catalogue].path cannot be empty".into(),
+        }
+        .into());
+    }
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let Some(dir) = config_path.and_then(Path::parent) else {
+            return Err(UserError::InvalidConfig {
+                reason: format!(
+                    "relative [catalogue].path '{}' needs a config file to resolve against; \
+                     use an absolute path",
+                    path.display()
+                ),
+            }
+            .into());
+        };
+        dir.join(path)
+    };
+    std::path::absolute(&joined).map_err(|e| {
+        UserError::InvalidConfig {
+            reason: format!(
+                "cannot resolve [catalogue].path '{}': {e}",
+                joined.display()
+            ),
+        }
+        .into()
+    })
+}
+
 fn resolve_stt(file: &ConfigFile) -> (String, String, String, String) {
     match file.stt.as_ref() {
         Some(s) => (
@@ -2018,6 +2059,75 @@ origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = 
         )
         .unwrap();
         assert!(Config::load_from_required(&config).is_err());
+    }
+
+    const MINIMAL_CATALOGUE: &str = r#"schema_version = 1
+[[model]]
+id = "deployment-tiny"
+direction = "stt"
+provider = "local"
+tier = "supported"
+origin = { kind = "downloadable_local", filename = "deployment-tiny.bin", url = "https://example.invalid/deployment-tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+"#;
+
+    #[test]
+    fn relative_catalogue_path_resolves_against_the_config_directory() {
+        let dir = tempdir().unwrap();
+        let config_dir = dir.path().join("etc");
+        fs::create_dir_all(config_dir.join("catalogues")).unwrap();
+        let deployment = config_dir.join("catalogues").join("models.toml");
+        fs::write(&deployment, MINIMAL_CATALOGUE).unwrap();
+        let config = config_dir.join("config.toml");
+        fs::write(&config, "[catalogue]\npath = \"catalogues/models.toml\"\n").unwrap();
+
+        // Process cwd is irrelevant: only the config file location matters.
+        let cfg = Config::load_from_required(&config).unwrap();
+        assert!(cfg.catalogue.lookup("deployment-tiny").is_some());
+        let resolved = cfg.catalogue_path.as_deref().unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            fs::canonicalize(resolved).unwrap(),
+            fs::canonicalize(&deployment).unwrap()
+        );
+    }
+
+    #[test]
+    fn relative_catalogue_path_without_a_config_file_fails_closed() {
+        let err = resolve_catalogue_path(Path::new("models.toml"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("absolute path"), "{err}");
+        assert!(resolve_catalogue_path(Path::new(""), None).is_err());
+        assert!(crate::catalogue::CatalogueDocument::load(Path::new("models.toml")).is_err());
+    }
+
+    #[test]
+    fn oversized_catalogue_file_is_rejected() {
+        let dir = tempdir().unwrap();
+        let deployment = dir.path().join("huge.toml");
+        let mut text = String::from(MINIMAL_CATALOGUE);
+        let padding =
+            "# padding\n".repeat((crate::catalogue::MAX_CATALOGUE_BYTES as usize / 10) + 1);
+        text.push_str(&padding);
+        fs::write(&deployment, text).unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, format!("[catalogue]\npath = {:?}\n", deployment)).unwrap();
+        let err = Config::load_from_required(&config).unwrap_err().to_string();
+        assert!(err.contains("bytes"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_catalogue_file_is_rejected() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real.toml");
+        fs::write(&real, MINIMAL_CATALOGUE).unwrap();
+        let link = dir.path().join("link.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, format!("[catalogue]\npath = {:?}\n", link)).unwrap();
+        let err = Config::load_from_required(&config).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
     }
 
     #[test]
