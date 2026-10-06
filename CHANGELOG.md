@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn (`--thinking-pause`, default 1.2s) so a ~1s mid-thought pause does not
   cut the user off.
 - **Dynamic local model catalogue:** versioned, integrity-pinned model records
-  with explicit deployment replacement. The default local model stays `base`;
+  and an explicit `[catalogue].path` that can disable built-in STT models and
+  set the default STT model. The default local model stays `base`;
   language never selects a model. Experimental Portuguese specialists
   (`medium-ptbr-q5_0`, `large-v3-ptpt-q5_0`) are reachable only via an explicit
   `--model` / `[stt].model`.
