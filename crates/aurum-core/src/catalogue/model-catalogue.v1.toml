@@ -211,7 +211,7 @@ tier = "experimental"
 languages = ["pt-PT"]
 notes = "experimental — European Portuguese specialist; prepare locally"
 license = "Apache-2.0"
-origin = { kind = "prepared_local", filename = "ggml-large-v3-ptpt-q5_0.bin", size_bytes = 1081140203, sha256 = "92c6b30b24dc7b035505a1750bfd3dac51d0984ea7120bc518d3f5c3228030c7", source_url = "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0", revision = "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0", preparation = "scripts/prepare_portuguese_models.sh --cache-root ${XDG_CACHE_HOME:-$HOME/.cache} --work-dir /tmp/aurum-portuguese-tools" }
+origin = { kind = "prepared_local", filename = "ggml-large-v3-ptpt-q5_0.bin", size_bytes = 1081140203, sha256 = "92c6b30b24dc7b035505a1750bfd3dac51d0984ea7120bc518d3f5c3228030c7", source_url = "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0", revision = "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0", preparation = "scripts/prepare_portuguese_models.sh" }
 
 [[model]]
 id = "large-v3-turbo"

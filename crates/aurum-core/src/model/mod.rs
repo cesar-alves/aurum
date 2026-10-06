@@ -21,8 +21,8 @@ const MEDIUM_PTBR_URL: &str = "https://huggingface.co/nexorama-tech/whisper-medi
 const LARGE_V3_PTPT_REVISION: &str = "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
 const LARGE_V3_PTPT_SOURCE_URL: &str =
     "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
-const PORTUGUESE_PREPARATION_COMMAND: &str =
-    "scripts/prepare_portuguese_models.sh --cache-root \"${XDG_CACHE_HOME:-$HOME/.cache}\" --work-dir /tmp/aurum-portuguese-tools";
+/// The script's defaults keep its work directory under the user's cache root.
+const PORTUGUESE_PREPARATION_COMMAND: &str = "scripts/prepare_portuguese_models.sh";
 /// Manifest schema version for diagnostics (JOE-1590).
 pub const ARTIFACT_MANIFEST_VERSION: &str = "1";
 /// Provenance label for built-in pins.
