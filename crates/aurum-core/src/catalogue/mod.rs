@@ -106,10 +106,6 @@ pub enum Origin {
         sample_rate_hz: u32,
         shipped: bool,
     },
-    Remote {
-        wire_model: String,
-        capabilities: RemoteCapabilities,
-    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -129,18 +125,6 @@ pub struct Voice {
     pub language: String,
     #[serde(default)]
     pub notes: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteCapabilities {
-    pub timestamps_reliable: bool,
-    #[serde(default)]
-    pub voices: Vec<String>,
-    #[serde(default)]
-    pub max_upload_bytes: Option<u64>,
-    #[serde(default)]
-    pub max_text_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +172,16 @@ impl CatalogueDocument {
         let mut aliases = BTreeSet::new();
         for record in &self.records {
             validate_id(&record.id, "canonical id")?;
+            // This is a local model catalogue. Remote providers keep their own
+            // reviewed registries and `ProviderCapabilities`; duplicating them
+            // here would create a second, drifting source of capability truth.
+            if record.provider != "local" {
+                return Err(config_error(format!(
+                    "catalogue record '{}' must use provider = \"local\"; remote models are \
+                     selected with --provider and are not catalogue records",
+                    record.id
+                )));
+            }
             if !ids.insert(record.id.to_ascii_lowercase()) {
                 return Err(config_error(format!(
                     "duplicate catalogue id '{}'",
@@ -399,140 +393,22 @@ impl EffectiveCatalogue {
 /// synthesized from Rust tables: parity tests instead assert that the legacy
 /// `model::MODELS` / `tts::catalogue::MODELS` views match this file exactly.
 fn builtin_document() -> Result<CatalogueDocument> {
-    let mut document = CatalogueDocument::parse(BUILTIN_TOML)?;
+    let document = CatalogueDocument::parse(BUILTIN_TOML)?;
     #[cfg(not(feature = "tts"))]
-    {
+    let document = {
+        let mut document = document;
         document
             .records
             .retain(|record| record.direction != Direction::Tts);
         document.defaults.tts = DirectionDefaults::default();
-    }
+        document
+    };
     for record in &document.records {
         for url in record_urls(record) {
             reviewed_builtin_url(url)?;
         }
     }
-    for record in crate::providers::OPENAI_STT_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "openai",
-            Direction::Stt,
-            record.max_upload_bytes as u64,
-            None,
-            &[],
-        );
-    }
-    for record in crate::providers::XAI_STT_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "xai",
-            Direction::Stt,
-            record.max_upload_bytes as u64,
-            None,
-            &[],
-        );
-    }
-    for record in crate::capabilities::OPENROUTER_STT_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model_id,
-            "openrouter",
-            Direction::Stt,
-            0,
-            None,
-            &[],
-        );
-    }
-    #[cfg(feature = "tts")]
-    for record in crate::providers::OPENROUTER_TTS_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "openrouter",
-            Direction::Tts,
-            0,
-            Some(record.max_text_chars),
-            record.voices,
-        );
-    }
-    #[cfg(feature = "tts")]
-    for record in crate::providers::OPENAI_TTS_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "openai",
-            Direction::Tts,
-            0,
-            Some(record.max_text_chars),
-            record.voices,
-        );
-    }
-    #[cfg(feature = "tts")]
-    for record in crate::providers::ELEVENLABS_TTS_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "elevenlabs",
-            Direction::Tts,
-            0,
-            Some(record.max_text_chars),
-            &[],
-        );
-    }
-    #[cfg(feature = "tts")]
-    for record in crate::providers::XAI_TTS_REGISTRY {
-        push_remote(
-            &mut document,
-            record.model,
-            "xai",
-            Direction::Tts,
-            0,
-            Some(record.max_text_chars),
-            record.voices,
-        );
-    }
-    document.validate()?;
     Ok(document)
-}
-
-fn push_remote(
-    document: &mut CatalogueDocument,
-    id: &str,
-    provider: &str,
-    direction: Direction,
-    max_upload_bytes: u64,
-    max_text_chars: Option<usize>,
-    voices: &[&str],
-) {
-    if document
-        .records
-        .iter()
-        .any(|record| record.id.eq_ignore_ascii_case(id))
-    {
-        return;
-    }
-    document.records.push(CatalogueRecord {
-        id: id.into(),
-        direction,
-        provider: provider.into(),
-        aliases: Vec::new(),
-        enabled: true,
-        tier: SupportTier::Supported,
-        languages: Vec::new(),
-        notes: "reviewed remote provider record".into(),
-        license: "provider terms".into(),
-        origin: Origin::Remote {
-            wire_model: id.into(),
-            capabilities: RemoteCapabilities {
-                timestamps_reliable: direction == Direction::Stt,
-                voices: voices.iter().map(|voice| (*voice).into()).collect(),
-                max_upload_bytes: (max_upload_bytes > 0).then_some(max_upload_bytes),
-                max_text_chars,
-            },
-        },
-    });
 }
 
 fn merge_defaults(target: &mut DirectionDefaults, incoming: DirectionDefaults) {
@@ -548,8 +424,7 @@ fn validate_effective_default(
     let Some(record) = records.iter().find(|record| {
         record.record.direction == direction
             && record.record.id.eq_ignore_ascii_case(id)
-            && record.record.provider.eq_ignore_ascii_case("local")
-            && !matches!(record.record.origin, Origin::Remote { .. })
+            && record.record.provider == "local"
     }) else {
         return Err(config_error(format!(
             "{direction:?} default '{id}' does not resolve to an enabled compatible record"
@@ -660,25 +535,6 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
             }
             Ok(())
         }
-        Origin::Remote {
-            wire_model,
-            capabilities,
-        } => {
-            if record.provider.eq_ignore_ascii_case("local")
-                || wire_model.trim().is_empty()
-                || !is_registered_remote(&record.provider, record.direction)
-            {
-                return Err(config_error(
-                    "remote record uses an unsupported provider/direction combination",
-                ));
-            }
-            if record.direction == Direction::Tts && capabilities.max_text_chars.is_none() {
-                return Err(config_error(
-                    "remote TTS records require max_text_chars capability metadata",
-                ));
-            }
-            Ok(())
-        }
     }
 }
 fn record_urls(record: &CatalogueRecord) -> Vec<&str> {
@@ -686,7 +542,6 @@ fn record_urls(record: &CatalogueRecord) -> Vec<&str> {
         Origin::DownloadableLocal { url, .. } => vec![url.as_str()],
         Origin::PreparedLocal { source_url, .. } => vec![source_url.as_str()],
         Origin::TtsPack { files, .. } => files.iter().map(|file| file.url.as_str()).collect(),
-        Origin::Remote { .. } => Vec::new(),
     }
 }
 /// Built-in records may only point at the reviewed hosts already used by
@@ -727,12 +582,6 @@ fn local_record(record: &CatalogueRecord) -> Result<()> {
             "local STT artifact origins require direction=stt and provider=local",
         ))
     }
-}
-fn is_registered_remote(provider: &str, direction: Direction) -> bool {
-    matches!(
-        (provider.to_ascii_lowercase().as_str(), direction),
-        ("openrouter", _) | ("openai", _) | ("xai", _) | ("elevenlabs", Direction::Tts)
-    )
 }
 fn safe_https(url: &str) -> Result<()> {
     let url = url::Url::parse(url).map_err(|_| config_error(format!("invalid URL '{url}'")))?;
@@ -807,7 +656,7 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
         let stt: Vec<_> = document
             .records
             .iter()
-            .filter(|record| record.direction == Direction::Stt && record.provider == "local")
+            .filter(|record| record.direction == Direction::Stt)
             .collect();
         // Every legacy name (canonical or alias) is a TOML id or alias with identical pins.
         for model in crate::model::MODELS {
@@ -955,7 +804,7 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
         let tts_records = document
             .records
             .iter()
-            .filter(|record| record.direction == Direction::Tts && record.provider == "local")
+            .filter(|record| record.direction == Direction::Tts)
             .count();
         assert_eq!(tts_records, shipped.len(), "TOML has unshipped TTS records");
     }
@@ -1188,8 +1037,20 @@ origin = { kind = "downloadable_local", filename = "changed-base.bin", url = "ht
     }
 
     #[test]
-    fn remote_records_cannot_be_defaults() {
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
+    fn remote_records_are_not_catalogue_records() {
+        // The old remote origin kind no longer exists in the schema.
+        let remote_origin = r#"schema_version = 1
+[[model]]
+id = "remote"
+direction = "stt"
+provider = "openai"
+tier = "supported"
+origin = { kind = "remote", wire_model = "whisper-1", capabilities = { timestamps_reliable = true } }
+"#;
+        assert!(CatalogueDocument::parse(remote_origin).is_err());
+        // A non-local provider is rejected even with a local-looking origin, so
+        // a deployment can never make a remote provider implicit.
+        let remote_provider = r#"schema_version = 1
 [defaults.stt]
 global = "remote"
 [[model]]
@@ -1197,13 +1058,18 @@ id = "remote"
 direction = "stt"
 provider = "openai"
 tier = "supported"
-origin = { kind = "remote", wire_model = "whisper-1", capabilities = { timestamps_reliable = true } }
-"#).unwrap();
-        assert!(EffectiveCatalogue::from_documents(
-            builtin_document().unwrap(),
-            Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
-        )
-        .is_err());
+origin = { kind = "downloadable_local", filename = "remote.bin", url = "https://example.invalid/remote.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+"#;
+        let err = CatalogueDocument::parse(remote_provider)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("provider = \"local\""), "{err}");
+        // And the built-in catalogue carries no remote rows at all.
+        assert!(builtin_document()
+            .unwrap()
+            .records
+            .iter()
+            .all(|record| record.provider == "local"));
     }
 
     #[test]

@@ -89,7 +89,9 @@ provider = "rules"         # rules | openrouter
 # built-ins by canonical id; `enabled = false` may name the canonical id or an
 # existing alias and removes that entire record. `[defaults.stt].global` is
 # resolved after the effective catalogue is assembled, so it may target a
-# built-in; it must be a local `supported` record (never experimental/remote).
+# built-in; it must be a `supported` record (never experimental). Every record
+# is local (`provider = "local"`): remote models are chosen with `--provider`
+# plus credentials and are never catalogue records.
 # The path is explicit: Aurum never discovers, fetches, or falls back from it.
 # [catalogue]
 # path = "/absolute/path/to/model-catalogue.toml"
