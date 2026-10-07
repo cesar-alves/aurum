@@ -151,6 +151,10 @@ pub struct EffectiveRecord {
 pub struct EffectiveCatalogue {
     records: Vec<EffectiveRecord>,
     defaults: Defaults,
+    /// Canonical ids of built-in records a deployment disabled, sorted. Until
+    /// #146 a deployment can only narrow, so this (with the digest) is where
+    /// its effect is visible: every remaining record's source is `Builtin`.
+    disabled: Vec<String>,
     /// Computed once at construction so reading it can never fail or panic.
     digest: String,
 }
@@ -321,6 +325,7 @@ impl EffectiveCatalogue {
             })
             .collect::<Result<_>>()?;
         let mut defaults = builtin.defaults;
+        let mut disabled_ids: Vec<String> = Vec::new();
         if let Some((deployment, _path)) = deployment {
             deployment.validate()?;
             reject_widening_deployment(&deployment)?;
@@ -363,6 +368,8 @@ impl EffectiveCatalogue {
             // global retains the built-in default.
             merge_defaults(&mut defaults.stt, deployment.defaults.stt);
             merge_defaults(&mut defaults.tts, deployment.defaults.tts);
+            disabled_ids = disabled.into_iter().map(|entry| entry.record.id).collect();
+            disabled_ids.sort();
         }
         let records: Vec<_> = records.into_values().collect();
         reject_effective_name_collisions(&records)?;
@@ -381,6 +388,7 @@ impl EffectiveCatalogue {
         let effective = Self {
             records,
             defaults,
+            disabled: disabled_ids,
             digest,
         };
         effective.validate_effective()?;
@@ -389,6 +397,10 @@ impl EffectiveCatalogue {
 
     pub fn records(&self) -> &[EffectiveRecord] {
         &self.records
+    }
+    /// Canonical ids of built-in records the deployment catalogue disabled.
+    pub fn disabled(&self) -> &[String] {
+        &self.disabled
     }
     /// Digest of the canonical serialized effective records for diagnostics and
     /// resumable batch fingerprints.
@@ -518,6 +530,12 @@ fn names_record(record: &CatalogueRecord, name: &str) -> bool {
 /// Every effective id and alias must name exactly one record. Each document
 /// checks itself; this catches a deployment name that shadows a built-in one,
 /// which would otherwise let lookup order decide which weights are selected.
+///
+/// While [`reject_widening_deployment`] limits a deployment to disabling
+/// records, the effective set is a subset of the validated built-ins and this
+/// cannot fire. It is kept armed for #146, when deployment records may add or
+/// replace models; `narrowing_deployment_never_produces_deployment_sources`
+/// pins the current invariant.
 fn reject_effective_name_collisions(records: &[EffectiveRecord]) -> Result<()> {
     let mut owners: BTreeMap<String, &str> = BTreeMap::new();
     for entry in records {
@@ -697,13 +715,21 @@ fn record_urls(record: &CatalogueRecord) -> Vec<(&str, UrlKind)> {
             .collect(),
     }
 }
+/// GitHub release origins a built-in record may use, as `(owner, repo, tag)`.
+/// Release tags are not content-addressed (an asset can be replaced), so each
+/// entry is a reviewed exception: the exact size and SHA-256 pins are the
+/// identity, and both are enforced on download and on cache verification, so a
+/// replaced asset fails closed. Prefer a pinned Hugging Face revision; adding
+/// an entry here needs review.
+const REVIEWED_GITHUB_RELEASES: &[(&str, &str, &str)] =
+    &[("thewh1teagle", "kokoro-onnx", "model-files-v1.0")];
+
 /// Built-in records may only point at the reviewed hosts already used by
 /// `model::` / `tts::catalogue`, and Hugging Face URLs must name an immutable
-/// 40-hex revision rather than a moving branch such as `main`. GitHub release
-/// tags are not immutable (a release asset can be replaced), so for those
-/// assets the exact size and SHA-256 pins are the only identity. Downloads must
-/// use `resolve/` (a file); `tree/` (a repository view) only names the source
-/// of a prepared-local artifact.
+/// 40-hex revision rather than a moving branch such as `main`. GitHub URLs
+/// must be a release asset of a [`REVIEWED_GITHUB_RELEASES`] entry. Downloads
+/// must use `resolve/` (a file); `tree/` (a repository view) only names the
+/// source of a prepared-local artifact.
 fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
     let parsed = url::Url::parse(url).map_err(|_| config_error(format!("invalid URL '{url}'")))?;
     let segments: Vec<&str> = parsed
@@ -721,7 +747,14 @@ fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
                     && is_immutable_revision(segments[3])
             }
             // github.com/{org}/{repo}/releases/download/{tag}/{asset}
-            Some("github.com") => segments.len() == 6 && segments[2..4] == ["releases", "download"],
+            Some("github.com") => {
+                segments.len() == 6
+                    && segments[2..4] == ["releases", "download"]
+                    && REVIEWED_GITHUB_RELEASES.iter().any(|(owner, repo, tag)| {
+                        segments[0] == *owner && segments[1] == *repo && segments[4] == *tag
+                    })
+                    && parsed.query().is_none()
+            }
             _ => false,
         };
     if reviewed {
@@ -948,7 +981,7 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
                     (
                         file.filename.to_string(),
                         tts::pack_file_url(model, file),
-                        file.approx_bytes,
+                        file.size_bytes,
                         file.sha256.to_string(),
                     )
                 })
@@ -999,6 +1032,10 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             "https://example.com/ggml-base.bin",
             "http://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
             "https://github.com/org/repo/raw/main/model.onnx",
+            // A release asset outside the reviewed (owner, repo, tag) list.
+            "https://github.com/someone/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx",
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.int8.onnx",
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx?x=1",
         ] {
             assert!(
                 reviewed_builtin_url(bad, UrlKind::Download).is_err(),
@@ -1007,6 +1044,8 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
         }
         let resolve = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin";
         assert!(reviewed_builtin_url(resolve, UrlKind::Download).is_ok());
+        let release = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+        assert!(reviewed_builtin_url(release, UrlKind::Download).is_ok());
         // A `tree/` URL is a repository view: it may name a preparation
         // source, but it is never something Aurum downloads.
         let tree = "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
@@ -1313,6 +1352,31 @@ origin = {{ kind = "downloadable_local", filename = "unused.bin", url = "https:/
             ));
         }
         CatalogueDocument::parse(&text).unwrap()
+    }
+
+    /// Until #146 a deployment only narrows: whatever it disables, every
+    /// effective record stays `Builtin` and the effect is reported through
+    /// `disabled()` by canonical id (an alias entry reports its canonical id).
+    #[test]
+    fn narrowing_deployment_never_produces_deployment_sources() {
+        let effective = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((
+                disable_entries(&["large", "tiny", "turbo-q5_0"]),
+                PathBuf::from("/tmp/deploy.toml"),
+            )),
+        )
+        .unwrap();
+        assert!(effective
+            .records()
+            .iter()
+            .all(|entry| entry.source == CatalogueSource::Builtin));
+        let disabled = effective.disabled();
+        assert_eq!(disabled.len(), 3, "{disabled:?}");
+        assert!(disabled.contains(&"tiny".to_string()));
+        assert!(disabled.contains(&"large-v3".to_string()), "{disabled:?}");
+        assert!(disabled.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(EffectiveCatalogue::builtin().unwrap().disabled().is_empty());
     }
 
     #[test]

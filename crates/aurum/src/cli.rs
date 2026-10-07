@@ -449,7 +449,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Commands::Models { command: None }) => {
             init_tracing(false);
             let cfg = Config::load()?;
-            print!("{}", model::format_model_list(&cfg.cache_dir));
+            print!(
+                "{}",
+                model::format_model_list_with(
+                    &cfg.cache_dir,
+                    |m| cfg.local_model_allowed(m),
+                    cfg.default_local_stt_model(),
+                )
+            );
             Ok(())
         }
         Some(Commands::Models {
@@ -462,9 +469,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         }) => {
             init_tracing(false);
             let cfg = Config::load()?;
-            let lang = language.unwrap_or(cfg.language);
+            let lang = language.unwrap_or_else(|| cfg.language.clone());
             let p = aurum_core::QualityProfile::parse(&profile)?;
-            let res = aurum_core::resolve_profile(p, &lang)?;
+            let res = aurum_core::resolve_profile_with(p, &lang, |m| cfg.local_model_allowed(m))?;
             if json {
                 println!(
                     "{}",
@@ -995,7 +1002,8 @@ async fn run_transcribe(cli: TranscribeArgs) -> Result<()> {
         cfg.resolve_model(true)?
     } else if let Some(ref profile) = cli.profile {
         let p = aurum_core::QualityProfile::parse(profile)?;
-        let res = aurum_core::resolve_profile(p, &cfg.language)?;
+        let res =
+            aurum_core::resolve_profile_with(p, &cfg.language, |m| cfg.local_model_allowed(m))?;
         if cli.verbose || atty_stderr() {
             eprintln!(
                 "aurum: profile {} → model {} (evidence {})",
@@ -1350,7 +1358,8 @@ async fn run_cache_cmd(cli: CacheCli) -> Result<()> {
     let cfg = Config::load()?;
     match cli.command {
         CacheCommands::Status => {
-            let entries = aurum_core::cache::status_stt(&cfg.cache_dir);
+            let mut entries = aurum_core::cache::status_stt(&cfg.cache_dir);
+            aurum_core::cache::mark_disabled(&mut entries, |m| cfg.local_model_allowed(m));
             if cli.json {
                 println!("{}", aurum_core::cache::status_json(&entries)?);
             } else {
@@ -1358,7 +1367,8 @@ async fn run_cache_cmd(cli: CacheCli) -> Result<()> {
             }
         }
         CacheCommands::Verify => {
-            let entries = aurum_core::cache::verify_stt(&cfg.cache_dir);
+            let mut entries = aurum_core::cache::verify_stt(&cfg.cache_dir);
+            aurum_core::cache::mark_disabled(&mut entries, |m| cfg.local_model_allowed(m));
             if cli.json {
                 println!("{}", aurum_core::cache::status_json(&entries)?);
             } else {

@@ -570,6 +570,9 @@ pub struct EffectiveConfigDiagnostic {
     pub catalogue_path: Option<String>,
     pub catalogue_digest: String,
     pub catalogue_records: Vec<CatalogueRecordDiagnostic>,
+    /// Built-in models the deployment catalogue disabled (canonical ids).
+    #[serde(default)]
+    pub catalogue_disabled: Vec<String>,
     pub local_only: bool,
     pub config_path: Option<String>,
     pub cache_dir: String,
@@ -893,6 +896,7 @@ impl Config {
                     digest: record.digest.clone(),
                 })
                 .collect(),
+            catalogue_disabled: self.catalogue.disabled().to_vec(),
             local_only: self.local_only,
             config_path: self.config_path.as_ref().map(|p| p.display().to_string()),
             cache_dir: self.cache_dir.display().to_string(),
@@ -1165,6 +1169,21 @@ impl Config {
                 .join(", "),
         }
         .into())
+    }
+
+    /// Predicate form of [`Self::check_local_model_allowed`], for listings and
+    /// recommendations that must hide what selection would reject.
+    pub fn local_model_allowed(&self, model: &str) -> bool {
+        self.check_local_model_allowed(model).is_ok()
+    }
+
+    /// The effective catalogue's global STT default (the deployment's
+    /// `[defaults.stt].global` when one is set).
+    pub fn default_local_stt_model(&self) -> &str {
+        self.catalogue
+            .resolve(crate::catalogue::Direction::Stt, None, None)
+            .map(|record| record.record.id.as_str())
+            .unwrap_or(DEFAULT_LOCAL_MODEL)
     }
 
     fn default_model_for_provider(&self) -> String {
@@ -2213,6 +2232,86 @@ origin = { kind = "downloadable_local", filename = "base.bin", url = "https://ex
         let (_dir, cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "[stt]\nmodel = \"tiny\"\n");
         assert_eq!(cfg.model.as_deref(), Some("tiny"));
         assert_eq!(cfg.resolve_model(cfg.model.is_some()).unwrap(), "tiny");
+    }
+
+    #[test]
+    fn listing_recommendation_and_diagnostics_follow_the_deployment() {
+        let (_dir, cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "");
+        assert!(!cfg.local_model_allowed("base"));
+        assert!(!cfg.local_model_allowed("BASE"));
+        assert!(cfg.local_model_allowed("small"));
+        assert_eq!(cfg.default_local_stt_model(), "small");
+
+        let list = crate::model::format_model_list_with(
+            &cfg.cache_dir,
+            |m| cfg.local_model_allowed(m),
+            cfg.default_local_stt_model(),
+        );
+        assert!(
+            !list.lines().any(|line| line.starts_with("base ")),
+            "{list}"
+        );
+        assert!(list.contains("Default model: `small`"), "{list}");
+
+        // Balance resolves to `base` for non-English; the profile must not
+        // recommend it, and `transcribe --profile` uses the same resolution.
+        let res = crate::profile::resolve_profile_with(
+            crate::profile::QualityProfile::Balance,
+            "auto",
+            |m| cfg.local_model_allowed(m),
+        )
+        .unwrap();
+        assert_ne!(res.model, "base");
+        assert!(cfg.check_local_stt_model_allowed(&res.model).is_ok());
+
+        let diagnostic = cfg.effective_diagnostic();
+        assert_eq!(diagnostic.catalogue_disabled, vec!["base".to_string()]);
+
+        let mut entries = crate::cache::status_stt(&cfg.cache_dir);
+        crate::cache::mark_disabled(&mut entries, |m| cfg.local_model_allowed(m));
+        assert!(entries.iter().any(|e| e.id == "base" && !e.enabled));
+        assert!(entries.iter().filter(|e| e.id != "base").all(|e| e.enabled));
+
+        // Without a deployment catalogue nothing is hidden.
+        let (_dir, builtin) = load_with_deployment_free();
+        assert!(builtin.local_model_allowed("base"));
+        assert_eq!(builtin.default_local_stt_model(), "base");
+        assert!(builtin.effective_diagnostic().catalogue_disabled.is_empty());
+    }
+
+    #[test]
+    fn doctor_reports_a_configured_model_the_deployment_disables() {
+        let (_dir, cfg) = load_with_deployment(MINIMAL_CATALOGUE, "[stt]\nmodel = \"tiny\"\n");
+        let report = crate::doctor::run_doctor(&cfg);
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.id == "catalogue_model")
+            .expect("catalogue_model check");
+        assert!(!check.ok);
+        assert!(check.summary.contains("tiny"));
+
+        let (_dir, cfg) = load_with_deployment(MINIMAL_CATALOGUE, "");
+        let report = crate::doctor::run_doctor(&cfg);
+        assert!(!report
+            .checks
+            .iter()
+            .any(|check| check.id == "catalogue_model"));
+    }
+
+    #[tokio::test]
+    async fn engine_preload_rejects_a_disabled_model_before_any_download() {
+        let (_dir, mut cfg) = load_with_deployment(MINIMAL_CATALOGUE, "");
+        cfg.local_only = true;
+        let engine = crate::engine::AurumEngine::from_config(cfg).unwrap();
+        let err = engine.preload_stt("tiny").await.unwrap_err().to_string();
+        assert!(err.contains("unknown local model: tiny"), "{err}");
+    }
+
+    fn load_with_deployment_free() -> (TempDir, Config) {
+        let dir = tempdir().unwrap();
+        let cfg = Config::load_from(&dir.path().join("missing.toml")).unwrap();
+        (dir, cfg)
     }
 
     #[test]

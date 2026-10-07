@@ -26,9 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set the default STT model. The default local model stays `base`;
   language never selects a model. Experimental Portuguese specialists
   (`medium-ptbr-q5_0`, `large-v3-ptpt-q5_0`) are reachable only via an explicit
-  `--model` / `[stt].model`.
+  `--model` / `[stt].model`. A disabled model is hidden from `aurum models`,
+  is never recommended or picked by `--profile` (the profile's first enabled
+  alternative is used instead), is rejected by `AurumEngine` preload, is marked
+  disabled by `aurum cache status|verify`, and is reported by `aurum doctor`.
+  `aurum models` names the effective default. `aurum-ffi` hosts are not bound
+  by `[catalogue].path` yet (#146).
 
 ### Fixed
+
+- **TTS pack integrity:** voice-pack downloads and cache checks now enforce
+  each file's exact pinned size as well as its SHA-256. Previously, only the
+  SHA-256 was checked. Built-in GitHub origins are limited to an explicit list
+  of reviewed releases.
 
 - **Build/lint compatibility with Rust 1.98:** replaced `slice::chunks_exact` with
   the const-generic `slice::as_chunks` in the PCM decode and NPY float paths,

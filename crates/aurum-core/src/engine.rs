@@ -433,6 +433,9 @@ impl AurumEngine {
     /// Preload a local STT model into **this** engine's pool.
     pub async fn preload_stt(&self, model: &str) -> Result<std::path::PathBuf> {
         self.ensure_open()?;
+        // Preload downloads weights, so it honours a deployment catalogue's
+        // disabled models exactly like `run_stt`.
+        self.config().check_local_model_allowed(model)?;
         self.local_whisper()?.preload(model).await
     }
 
