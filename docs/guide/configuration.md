@@ -115,11 +115,19 @@ local speech-to-text models this installation may use.
 - **Narrowing only.** A deployment catalogue can disable built-in STT models
   and choose the default STT model. A disabled model is rejected however it
   is requested: `--model`, `[stt].model`, `--profile`, `aurum batch`,
-  `aurum converse`, or `aurum cache repair`. Model downloads, cache pins and
+  `aurum converse`, `aurum cache repair` (whatever `[stt].provider` is), or a
+  library host transcribing through `AurumEngine`. When no `[stt].model` is
+  set, every path uses the deployment's `[defaults.stt].global`. Model downloads, cache pins and
   TTS selection still come from the built-in catalogue, so a deployment record
   that adds or replaces a model, or any TTS record, fails closed. Supporting
   those records is tracked in
   [the deployment records issue](https://github.com/joe-broadhead/aurum/issues/146).
+- **Disable entries.** A disable entry uses the full v1 record schema, so it
+  still needs a syntactically valid origin (HTTPS URL, nonzero size, 64-hex
+  SHA-256). Those values are only validated, never fetched or compared with the
+  built-in pins: the entry matches a built-in STT model by id or alias and
+  removes it. An entry that names a TTS model is rejected. Disabling a model
+  and one of its aliases in the same file is accepted.
 - **Path resolution.** A relative path resolves against the directory of the
   config file that names it. It never resolves against the process working
   directory, and it is an error when no config file is in use. An absolute
@@ -136,7 +144,9 @@ local speech-to-text models this installation may use.
 
 The embedded catalogue is held to a stricter rule. Its URLs may only use the
 reviewed hosts (`huggingface.co`, plus GitHub release assets), and every
-Hugging Face URL must name an immutable revision.
+Hugging Face URL must name an immutable revision. GitHub release tags can be
+moved, so for release assets the exact size and SHA-256 pins are the only
+identity; a replaced asset fails verification rather than being used.
 
 ### `local_only`
 
