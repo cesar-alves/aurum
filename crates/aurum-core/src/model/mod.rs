@@ -275,7 +275,21 @@ pub fn list_models(cache_dir: &Path) -> Vec<ModelStatus> {
 
 /// Format a human-readable model table for CLI output.
 pub fn format_model_list(cache_dir: &Path) -> String {
-    let rows = list_models(cache_dir);
+    format_model_list_with(cache_dir, |_| true, crate::config::DEFAULT_LOCAL_MODEL)
+}
+
+/// [`format_model_list`] restricted to the models `allowed` accepts, with the
+/// effective default named. The CLI passes the effective catalogue here so a
+/// deployment-disabled model is never listed.
+pub fn format_model_list_with(
+    cache_dir: &Path,
+    allowed: impl Fn(&str) -> bool,
+    default_model: &str,
+) -> String {
+    let rows: Vec<_> = list_models(cache_dir)
+        .into_iter()
+        .filter(|row| allowed(row.info.name))
+        .collect();
     let mut out = String::from("Local whisper.cpp models (cache: ");
     out.push_str(&models_dir(cache_dir).display().to_string());
     out.push_str(")\n\n");
@@ -299,10 +313,17 @@ pub fn format_model_list(cache_dir: &Path) -> String {
             row.info.name, size, status, tier, row.info.notes
         ));
     }
-    out.push_str(
-        "\nTip: first run downloads the selected model. Try `tiny-q5_1` (~32 MB) for a quick trial.\n",
-    );
-    out.push_str("Default model: `base` (~142 MB). Use --model <name> to choose.\n");
+    out.push_str("\nTip: first run downloads the selected model.");
+    if allowed("tiny-q5_1") {
+        out.push_str(" Try `tiny-q5_1` (~32 MB) for a quick trial.");
+    }
+    out.push('\n');
+    let default_size = lookup_model(default_model)
+        .map(|info| format!(" (~{})", format_bytes(info.approx_bytes)))
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "Default model: `{default_model}`{default_size}. Use --model <name> to choose.\n"
+    ));
     out.push_str(
         "Guidance (single-clip dogfood, not formal WER): English lecture quality often \
          favors `small.en` or `large-v3-turbo`; prefer `.en` variants for English-only audio. \
@@ -982,6 +1003,18 @@ mod tests {
         assert!(list.contains("tiny-q5_1"));
         assert!(list.contains("base-q5_1"));
         assert!(list.contains("first run"));
+    }
+
+    #[test]
+    fn filtered_list_hides_disallowed_models_and_names_the_default() {
+        let list = format_model_list_with(
+            Path::new("/tmp/aurum-cache-test"),
+            |m| m != "tiny-q5_1",
+            "small",
+        );
+        assert!(!list.lines().any(|l| l.starts_with("tiny-q5_1 ")));
+        assert!(list.lines().any(|l| l.starts_with("tiny ")));
+        assert!(list.contains("Default model: `small`"));
     }
 
     #[test]
