@@ -1367,7 +1367,8 @@ async fn run_cache_cmd(cli: CacheCli) -> Result<()> {
         }
         CacheCommands::Repair { model, local_only } => {
             use aurum_core::model::{ensure_model_with_options, EnsureModelOptions};
-            cfg.check_local_stt_model_allowed(&model)?;
+            // Repair always fetches local weights, whatever `[stt].provider` is.
+            cfg.check_local_model_allowed(&model)?;
             let path = ensure_model_with_options(
                 &cfg.cache_dir,
                 &model,

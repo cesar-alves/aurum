@@ -309,9 +309,6 @@ impl Default for TtsSection {
 fn default_provider() -> String {
     DEFAULT_PROVIDER.to_string()
 }
-fn default_local_model() -> String {
-    DEFAULT_LOCAL_MODEL.to_string()
-}
 fn default_language() -> String {
     DEFAULT_LANGUAGE.to_string()
 }
@@ -918,7 +915,15 @@ impl Config {
         };
 
         let configured_stt_model = file.stt.as_ref().and_then(|section| section.model.clone());
-        let (provider, model, language, output) = resolve_stt(&file);
+        // Without `[stt].model`, the fallback is the effective catalogue's global
+        // default, so every path that reads `Config::model` (live, converse, the
+        // SDK, doctor) agrees with `resolve_model` on a deployment's default.
+        let default_stt_model = catalogue
+            .resolve(crate::catalogue::Direction::Stt, None, None)?
+            .record
+            .id
+            .clone();
+        let (provider, model, language, output) = resolve_stt(&file, &default_stt_model);
         let openrouter = resolve_openrouter(&file);
 
         let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
@@ -1061,7 +1066,7 @@ impl Config {
                 .model
                 .clone()
                 .unwrap_or_else(|| self.default_model_for_provider());
-            if self.provider == "openrouter"
+            if self.stt_provider() == "openrouter"
                 && !m.contains('/')
                 && (crate::model::lookup_model(&m).is_ok() || m == DEFAULT_LOCAL_MODEL)
             {
@@ -1077,7 +1082,7 @@ impl Config {
             self.check_local_stt_model_allowed(&m)?;
             return Ok(m);
         }
-        match self.provider.as_str() {
+        match self.stt_provider().as_str() {
             "openrouter" => {
                 let m = self
                     .model
@@ -1115,12 +1120,30 @@ impl Config {
         }
     }
 
+    /// The STT provider id as the provider registry sees it. Provider ids are
+    /// case-insensitive (`ProviderId::parse`), so every comparison goes through
+    /// this rather than the raw configured spelling.
+    fn stt_provider(&self) -> String {
+        self.provider.trim().to_ascii_lowercase()
+    }
+
     /// With a deployment catalogue, a local STT model must be one of its
     /// effective records however it was chosen (`--model`, `[stt].model`, a
     /// profile, batch or the SDK), so a disabled built-in stays unusable.
-    /// Without one, behaviour is unchanged.
+    /// Remote providers are not governed by the local catalogue. Without a
+    /// deployment catalogue, behaviour is unchanged.
     pub fn check_local_stt_model_allowed(&self, model: &str) -> Result<()> {
-        if self.provider != "local" || self.catalogue_path.is_none() {
+        if self.stt_provider() != "local" {
+            return Ok(());
+        }
+        self.check_local_model_allowed(model)
+    }
+
+    /// Like [`Self::check_local_stt_model_allowed`], but for operations that
+    /// always fetch or load local whisper weights whatever the configured STT
+    /// provider is, such as `aurum cache repair`.
+    pub fn check_local_model_allowed(&self, model: &str) -> Result<()> {
+        if self.catalogue_path.is_none() {
             return Ok(());
         }
         if self
@@ -1145,7 +1168,7 @@ impl Config {
     }
 
     fn default_model_for_provider(&self) -> String {
-        match self.provider.as_str() {
+        match self.stt_provider().as_str() {
             "openrouter" => self.openrouter_default_model.clone(),
             _ => DEFAULT_LOCAL_MODEL.to_string(),
         }
@@ -1200,17 +1223,17 @@ fn resolve_catalogue_path(path: &Path, config_path: Option<&Path>) -> Result<Pat
     })
 }
 
-fn resolve_stt(file: &ConfigFile) -> (String, String, String, String) {
+fn resolve_stt(file: &ConfigFile, default_model: &str) -> (String, String, String, String) {
     match file.stt.as_ref() {
         Some(s) => (
             s.provider.clone(),
-            s.model.clone().unwrap_or_else(default_local_model),
+            s.model.clone().unwrap_or_else(|| default_model.to_string()),
             s.language.clone(),
             s.output.clone(),
         ),
         None => (
             default_provider(),
-            default_local_model(),
+            default_model.to_string(),
             default_language(),
             default_output(),
         ),
@@ -1494,7 +1517,7 @@ provider = "local"
 mod tests {
     use super::*;
     use std::io::Write;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     /// Serialize tests that mutate process environment (parallel cargo test).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2145,6 +2168,75 @@ origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://ex
         .unwrap();
         let cfg = Config::load_from_required(&config).unwrap();
         assert!(cfg.resolve_model(false).is_err());
+    }
+
+    /// Disables the built-in `base` and makes `small` the global STT default.
+    const REPLACE_BASE_DEFAULT: &str = r#"schema_version = 1
+[defaults.stt]
+global = "small"
+[[model]]
+id = "base"
+direction = "stt"
+provider = "local"
+enabled = false
+tier = "supported"
+origin = { kind = "downloadable_local", filename = "base.bin", url = "https://example.invalid/base.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+"#;
+
+    fn load_with_deployment(catalogue_toml: &str, extra_config: &str) -> (TempDir, Config) {
+        let dir = tempdir().unwrap();
+        let catalogue = dir.path().join("catalogue.toml");
+        fs::write(&catalogue, catalogue_toml).unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(
+            &config,
+            format!("[catalogue]\npath = {:?}\n{extra_config}", catalogue),
+        )
+        .unwrap();
+        let cfg = Config::load_from_required(&config).unwrap();
+        (dir, cfg)
+    }
+
+    #[test]
+    fn deployment_global_default_reaches_every_implicit_path() {
+        let (_dir, cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "");
+        // `aurum <file>` / batch.
+        assert_eq!(cfg.resolve_model(false).unwrap(), "small");
+        // Live, converse and `--mic` resolve with `cfg.model.is_some()`.
+        assert_eq!(cfg.model.as_deref(), Some("small"));
+        assert_eq!(cfg.resolve_model(cfg.model.is_some()).unwrap(), "small");
+        // The SDK projection.
+        let sdk = crate::sdk::AurumConfig::try_from_config(cfg).unwrap();
+        assert_eq!(sdk.stt.model, "small");
+
+        // `[stt].model` still wins over the deployment default.
+        let (_dir, cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "[stt]\nmodel = \"tiny\"\n");
+        assert_eq!(cfg.model.as_deref(), Some("tiny"));
+        assert_eq!(cfg.resolve_model(cfg.model.is_some()).unwrap(), "tiny");
+    }
+
+    #[test]
+    fn provider_spelling_does_not_bypass_a_disabled_model() {
+        let (_dir, mut cfg) = load_with_deployment(MINIMAL_CATALOGUE, "");
+        cfg.model = Some("tiny".into());
+        for provider in ["Local", "LOCAL", " local "] {
+            cfg.provider = provider.into();
+            assert!(cfg.resolve_model(true).is_err(), "{provider}");
+            assert!(
+                cfg.check_local_stt_model_allowed("tiny").is_err(),
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_model_check_ignores_the_stt_provider() {
+        // `aurum cache repair` fetches local weights even when STT is remote.
+        let (_dir, mut cfg) = load_with_deployment(MINIMAL_CATALOGUE, "");
+        cfg.provider = "openai".into();
+        assert!(cfg.check_local_stt_model_allowed("tiny").is_ok());
+        assert!(cfg.check_local_model_allowed("tiny").is_err());
+        assert!(cfg.check_local_model_allowed("base").is_ok());
     }
 
     #[test]
