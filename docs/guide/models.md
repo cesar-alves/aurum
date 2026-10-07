@@ -85,7 +85,11 @@ The script installs a hash-locked Python environment
 (`scripts/requirements/portuguese-prep.txt`) and keeps its work directory under
 `${XDG_CACHE_HOME:-$HOME/.cache}/aurum/prepare-portuguese`. It refuses a work
 directory that is a symlink or that you do not own. It needs about 13 GiB of
-free space there.
+free space there. The finished artifact is staged into Aurum's model cache
+(see [Cache location](#cache-location); `~/Library/Caches/aurum/models/` on
+macOS). Pass `--models-dir` if your cache lives elsewhere. The script and its
+smoke-test fixture live in the source repository, so run it from an Aurum
+checkout.
 
 Both remain outside the speed/balance/quality profiles while dialect-specific
 quality, hallucination, and quantization evidence is reviewed.

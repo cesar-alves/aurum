@@ -14,6 +14,7 @@ from run_portuguese_stt_eval import (
     normalize,
     repetition_ratio,
     sha256_file,
+    user_cache_root,
 )
 
 
@@ -35,7 +36,10 @@ def main() -> None:
         required=True,
         help="LABEL,pt-BR|pt-PT,MODEL_PATH (repeat for every artifact)",
     )
-    parser.add_argument("--out-dir", default="/tmp/aurum-portuguese-results/spotcheck")
+    parser.add_argument(
+        "--out-dir",
+        default=str(user_cache_root() / "portuguese-results" / "spotcheck"),
+    )
     args = parser.parse_args()
 
     manifest_path = Path(args.manifest).resolve()

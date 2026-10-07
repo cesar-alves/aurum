@@ -23,6 +23,9 @@ const LARGE_V3_PTPT_SOURCE_URL: &str =
     "https://huggingface.co/inesc-id/WhisperLv3-FT/tree/77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
 /// The script's defaults keep its work directory under the user's cache root.
 const PORTUGUESE_PREPARATION_COMMAND: &str = "scripts/prepare_portuguese_models.sh";
+/// The command is repo-relative, so installed-binary users need the docs too.
+const PORTUGUESE_PREPARATION_DOCS: &str =
+    "https://joe-broadhead.github.io/aurum/guide/models/#portuguese-specialists-experimental";
 /// Manifest schema version for diagnostics (JOE-1590).
 pub const ARTIFACT_MANIFEST_VERSION: &str = "1";
 /// Provenance label for built-in pins.
@@ -793,7 +796,8 @@ fn prepared_model_error(info: &ModelInfo) -> crate::error::AurumError {
         model: info.name.to_string(),
         reason: format!(
             "this trusted artifact must be prepared locally from the pinned INESC checkpoint; \
-             run `{PORTUGUESE_PREPARATION_COMMAND}`, then retry"
+             from an Aurum source checkout, run `{PORTUGUESE_PREPARATION_COMMAND}`, then retry \
+             (see {PORTUGUESE_PREPARATION_DOCS})"
         ),
     }
     .into()

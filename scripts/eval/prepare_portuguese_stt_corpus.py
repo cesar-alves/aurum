@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prepare a pinned, local-only pt-BR/pt-PT STT evaluation corpus.
 
-Install runtime dependencies outside the repository, for example:
-  uv venv --python 3.11 /tmp/aurum-portuguese-eval-venv
-  uv pip install --python /tmp/aurum-portuguese-eval-venv/bin/python \
+Install runtime dependencies outside the repository, in a directory you own
+(never a shared path such as /tmp), for example:
+  uv venv --python 3.11 "${XDG_CACHE_HOME:-$HOME/.cache}/aurum/portuguese-eval-venv"
+  uv pip install --python "${XDG_CACHE_HOME:-$HOME/.cache}/aurum/portuguese-eval-venv/bin/python" \
     datasets==2.19.2 huggingface-hub==0.28.1 soundfile==0.12.1
 
 Audio and the generated manifest must remain outside Git.
@@ -16,6 +17,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import zipfile
 from collections import defaultdict, deque
 from pathlib import Path
@@ -32,6 +34,12 @@ CAMOES_REVISION = "c85aec9653738c2a58ead316b61e1438cf845bc5"
 MIN_DURATION_S = 5.0
 MAX_DURATION_S = 20.0
 DEFAULT_CLIPS_PER_DIALECT = 10
+
+def user_cache_root() -> Path:
+    """Per-user work root. Never a fixed shared path such as /tmp, where another
+    local user could pre-create or redirect it."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "aurum"
+
 
 
 def stable_key(value: str) -> str:
@@ -227,8 +235,10 @@ def add_camoes_row(row: dict, index: int, out_dir: Path, selected: list[dict]) -
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", default="/tmp/aurum-portuguese-eval")
-    parser.add_argument("--hf-cache", default="/tmp/aurum-portuguese-eval/hf-cache")
+    parser.add_argument("--out-dir", default=str(user_cache_root() / "portuguese-eval"))
+    parser.add_argument(
+        "--hf-cache", default=str(user_cache_root() / "portuguese-eval" / "hf-cache")
+    )
     parser.add_argument(
         "--clips-per-dialect",
         type=int,

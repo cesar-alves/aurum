@@ -6,12 +6,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import time
 import unicodedata
 from collections import Counter
 from pathlib import Path
+
+
+def user_cache_root() -> Path:
+    """Per-user work root. Never a fixed shared path such as /tmp, where another
+    local user could pre-create or redirect it."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "aurum"
 
 
 DEFAULT_MODELS = (
@@ -135,7 +142,9 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--aurum", required=True)
     parser.add_argument("--models", default=DEFAULT_MODELS)
-    parser.add_argument("--out-dir", default="/tmp/aurum-portuguese-results")
+    parser.add_argument(
+        "--out-dir", default=str(user_cache_root() / "portuguese-results")
+    )
     parser.add_argument("--profile", default="local-host")
     parser.add_argument(
         "--reuse-results",
