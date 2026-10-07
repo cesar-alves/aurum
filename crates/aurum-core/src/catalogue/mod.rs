@@ -601,7 +601,17 @@ fn validate_origin(record: &CatalogueRecord) -> Result<()> {
             local_record(record)?;
             validate_filename(filename, "artifact filename")?;
             safe_https(source_url)?;
-            if revision.trim().is_empty() || preparation.trim().is_empty() {
+            // The revision is provenance for a locally prepared artifact: it must
+            // be an immutable revision and must be the one named by source_url,
+            // so the guidance and the checkpoint cannot drift apart.
+            if !is_immutable_revision(revision) || !url_revision(source_url, revision) {
+                return Err(config_error(format!(
+                    "prepared-local record '{}' requires an immutable 40-hex revision that \
+                     appears in source_url",
+                    record.id
+                )));
+            }
+            if preparation.trim().is_empty() {
                 return Err(config_error(
                     "prepared-local records require immutable revision and preparation guidance",
                 ));
@@ -679,15 +689,15 @@ fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
         .path_segments()
         .map(Iterator::collect)
         .unwrap_or_default();
-    let is_revision = |rev: &str| rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
     let reviewed = parsed.scheme() == "https"
+        && default_https_port(&parsed)
         && match parsed.host_str() {
             // huggingface.co/{org}/{repo}/(resolve|tree)/{revision}/...
             Some("huggingface.co") => {
                 segments.len() >= 4
                     && (segments[2] == "resolve"
                         || (segments[2] == "tree" && kind == UrlKind::PreparationSource))
-                    && is_revision(segments[3])
+                    && is_immutable_revision(segments[3])
             }
             // github.com/{org}/{repo}/releases/download/{tag}/{asset}
             Some("github.com") => segments.len() == 6 && segments[2..4] == ["releases", "download"],
@@ -700,6 +710,26 @@ fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
             "built-in catalogue URL must use a reviewed host and an immutable revision: '{url}'"
         )))
     }
+}
+/// A content-addressed source revision: exactly 40 hex digits.
+fn is_immutable_revision(revision: &str) -> bool {
+    revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit())
+}
+/// Whether `revision` names a path segment of `source_url`. Guards against a
+/// prepared-local record whose guidance and pinned checkpoint disagree.
+fn url_revision(source_url: &str, revision: &str) -> bool {
+    url::Url::parse(source_url)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()
+                .map(|segments| segments.into_iter().any(|segment| segment == revision))
+        })
+        .unwrap_or(false)
+}
+/// Only the default HTTPS port is accepted. The host check alone would let
+/// `https://huggingface.co:8443/...` through, because `host_str()` drops the port.
+fn default_https_port(url: &url::Url) -> bool {
+    matches!(url.port(), None | Some(443))
 }
 fn local_record(record: &CatalogueRecord) -> Result<()> {
     if record.direction == Direction::Stt && record.provider.eq_ignore_ascii_case("local") {
@@ -714,13 +744,14 @@ fn safe_https(url: &str) -> Result<()> {
     let url = url::Url::parse(url).map_err(|_| config_error(format!("invalid URL '{url}'")))?;
     if url.scheme() == "https"
         && url.host_str().is_some()
+        && default_https_port(&url)
         && url.username().is_empty()
         && url.password().is_none()
     {
         Ok(())
     } else {
         Err(config_error(format!(
-            "origin URL must be safe HTTPS: '{url}'"
+            "origin URL must be safe HTTPS (default port, no credentials): '{url}'"
         )))
     }
 }
@@ -1314,6 +1345,57 @@ origin = {{ kind = "downloadable_local", filename = "{filename}", url = "https:/
         }
         assert!(CatalogueDocument::parse(&record("org/model", "x.bin")).is_err());
         assert!(CatalogueDocument::parse(&record("ok", "ggml-x_q5.0.bin")).is_ok());
+    }
+
+    #[test]
+    fn urls_require_the_default_https_port() {
+        let record = |url: &str| {
+            format!(
+                r#"schema_version = 1
+[[model]]
+id = "porty"
+direction = "stt"
+provider = "local"
+tier = "supported"
+origin = {{ kind = "downloadable_local", filename = "x.bin", url = "{url}", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }}
+"#
+            )
+        };
+        assert!(CatalogueDocument::parse(&record("https://example.invalid:8443/x.bin")).is_err());
+        assert!(CatalogueDocument::parse(&record("https://example.invalid:443/x.bin")).is_ok());
+        // A non-default port cannot smuggle a reviewed host past the built-in policy.
+        assert!(reviewed_builtin_url(
+            "https://huggingface.co:8443/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+            UrlKind::Download
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn prepared_local_revision_must_be_immutable_and_match_source_url() {
+        let record = |source_url: &str, revision: &str| {
+            format!(
+                r#"schema_version = 1
+[[model]]
+id = "prepared"
+direction = "stt"
+provider = "local"
+tier = "explicit_only"
+origin = {{ kind = "prepared_local", filename = "p.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", source_url = "{source_url}", revision = "{revision}", preparation = "scripts/prepare.sh" }}
+"#
+            )
+        };
+        let rev = "77837e42b56d4be6ca15a66b5c41c9b8cf3e41b0";
+        let tree = format!("https://huggingface.co/inesc-id/WhisperLv3-FT/tree/{rev}");
+        assert!(CatalogueDocument::parse(&record(&tree, rev)).is_ok());
+        // A branch-like revision is refused.
+        assert!(CatalogueDocument::parse(&record(&tree, "main")).is_err());
+        // A revision that does not name the source path is refused.
+        assert!(CatalogueDocument::parse(&record(
+            &tree,
+            "0000000000000000000000000000000000000000"
+        ))
+        .is_err());
     }
 
     #[test]
