@@ -13,6 +13,10 @@ CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}"
 # Defaults to a directory under CACHE_ROOT once arguments are parsed. Never a
 # fixed shared path: this directory holds a Python venv that the script runs.
 WORK_DIR=""
+# Aurum's own model cache (`directories::ProjectDirs`). On macOS this is
+# ~/Library/Caches/aurum and ignores XDG_CACHE_HOME, so it is resolved per
+# platform once arguments are parsed rather than derived from CACHE_ROOT.
+MODELS_DIR=""
 KEEP_F16=0
 
 usage() {
@@ -23,9 +27,13 @@ Prepare the pinned INESC European Portuguese Whisper checkpoint as Aurum's
 trusted Q5_0 cache artifact.
 
 Options:
-  --cache-root PATH  XDG cache root (default: $XDG_CACHE_HOME or $HOME/.cache)
+  --cache-root PATH  cache root for the work dir
+                     (default: $XDG_CACHE_HOME or $HOME/.cache)
   --work-dir PATH    conversion workspace, owned by you
                      (default: <cache-root>/aurum/prepare-portuguese)
+  --models-dir PATH  Aurum model cache to stage into (default: the directory
+                     `aurum models` prints: ~/Library/Caches/aurum/models on
+                     macOS, ${XDG_CACHE_HOME:-~/.cache}/aurum/models elsewhere)
   --keep-f16         retain the converted F16 model for quantization comparison
   -h, --help         show this help
 EOF
@@ -41,6 +49,11 @@ while (($#)); do
     --work-dir)
       [[ $# -ge 2 ]] || { echo "missing value for --work-dir" >&2; exit 2; }
       WORK_DIR="$2"
+      shift 2
+      ;;
+    --models-dir)
+      [[ $# -ge 2 ]] || { echo "missing value for --models-dir" >&2; exit 2; }
+      MODELS_DIR="$2"
       shift 2
       ;;
     --keep-f16)
@@ -86,7 +99,14 @@ CONVERT_DIR="${WORK_DIR}/converted"
 VENV_DIR="${WORK_DIR}/venv"
 F16_PATH="${CONVERT_DIR}/ggml-large-v3-ptpt-f16.bin"
 Q5_PATH="${CONVERT_DIR}/ggml-large-v3-ptpt-q5_0.bin"
-MODEL_DIR="${CACHE_ROOT}/aurum/models"
+if [[ -z "$MODELS_DIR" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    MODELS_DIR="${HOME}/Library/Caches/aurum/models"
+  else
+    MODELS_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/aurum/models"
+  fi
+fi
+MODEL_DIR="$MODELS_DIR"
 DEST_PATH="${MODEL_DIR}/ggml-large-v3-ptpt-q5_0.bin"
 
 # Code from the work dir (the venv, the whisper.cpp build) is executed, so it
@@ -246,11 +266,11 @@ INESC:    $INESC_REVISION
 Tokenizer: $OPENAI_LARGE_V3_REVISION
 whisper.cpp: $WHISPER_CPP_REVISION
 
-Use it with Aurum:
-  XDG_CACHE_HOME="$CACHE_ROOT" aurum input.wav --model large-v3-ptpt-q5_0 --language pt -o json
+Use it with Aurum (\`aurum models\` should list it as cached):
+  aurum input.wav --model large-v3-ptpt-q5_0 --language pt -o json
 
 Download and use the immutable pt-BR model through Aurum:
-  XDG_CACHE_HOME="$CACHE_ROOT" aurum input.wav --model medium-ptbr-q5_0 --language pt -o json
+  aurum input.wav --model medium-ptbr-q5_0 --language pt -o json
 EOF
 
 if ((KEEP_F16 == 1)); then
