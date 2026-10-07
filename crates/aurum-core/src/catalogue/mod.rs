@@ -326,27 +326,38 @@ impl EffectiveCatalogue {
             reject_widening_deployment(&deployment)?;
             // A deployment can only narrow the built-in catalogue: every record
             // here is a disable entry for an STT built-in.
+            let mut disabled: Vec<EffectiveRecord> = Vec::new();
             for record in deployment.records {
-                let key = record.id.to_ascii_lowercase();
-                if records.remove(&key).is_none() {
-                    // Aliases are compatibility names; disabling one must disable
-                    // its canonical record rather than silently doing nothing.
-                    let alias_key = records.iter().find_map(|(canonical, entry)| {
-                        entry
-                            .record
-                            .aliases
-                            .iter()
-                            .any(|alias| alias.eq_ignore_ascii_case(&record.id))
-                            .then(|| canonical.clone())
-                    });
-                    let Some(alias_key) = alias_key else {
-                        return Err(config_error(format!(
-                            "disabled model '{}' does not match an effective canonical id or alias",
-                            record.id
-                        )));
-                    };
-                    records.remove(&alias_key);
+                // Aliases are compatibility names; disabling one must disable
+                // its canonical record rather than silently doing nothing.
+                let key = records.iter().find_map(|(canonical, entry)| {
+                    names_record(&entry.record, &record.id).then(|| canonical.clone())
+                });
+                let Some(key) = key else {
+                    // Disabling `large-v3` and its alias `large` together is
+                    // one intent, not an error.
+                    if disabled
+                        .iter()
+                        .any(|entry| names_record(&entry.record, &record.id))
+                    {
+                        continue;
+                    }
+                    return Err(config_error(format!(
+                        "disabled model '{}' does not match an effective canonical id or alias",
+                        record.id
+                    )));
+                };
+                // The disable entry declares `direction = "stt"`, but the name it
+                // matches is what gets removed: it must not reach a TTS record.
+                if records[&key].record.direction != Direction::Stt {
+                    return Err(config_error(format!(
+                        "deployment catalogue disables '{}', which is not an STT model; a \
+                         deployment catalogue can currently only disable built-in STT models \
+                         (see {DEPLOYMENT_RECORDS_ISSUE})",
+                        record.id
+                    )));
                 }
+                disabled.extend(records.remove(&key));
             }
             // An explicit deployment global replaces the built-in one; an absent
             // global retains the built-in default.
@@ -494,6 +505,14 @@ fn reject_widening_deployment(deployment: &CatalogueDocument) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `name` is the canonical id or an alias of `record` (ASCII
+/// case-insensitive, like [`EffectiveCatalogue::lookup`]).
+fn names_record(record: &CatalogueRecord, name: &str) -> bool {
+    std::iter::once(&record.id)
+        .chain(&record.aliases)
+        .any(|candidate| candidate.eq_ignore_ascii_case(name.trim()))
 }
 
 /// Every effective id and alias must name exactly one record. Each document
@@ -680,7 +699,9 @@ fn record_urls(record: &CatalogueRecord) -> Vec<(&str, UrlKind)> {
 }
 /// Built-in records may only point at the reviewed hosts already used by
 /// `model::` / `tts::catalogue`, and Hugging Face URLs must name an immutable
-/// 40-hex revision rather than a moving branch such as `main`. Downloads must
+/// 40-hex revision rather than a moving branch such as `main`. GitHub release
+/// tags are not immutable (a release asset can be replaced), so for those
+/// assets the exact size and SHA-256 pins are the only identity. Downloads must
 /// use `resolve/` (a file); `tree/` (a repository view) only names the source
 /// of a prepared-local artifact.
 fn reviewed_builtin_url(url: &str, kind: UrlKind) -> Result<()> {
@@ -1274,6 +1295,62 @@ origin = { kind = "downloadable_local", filename = "unused.bin", url = "https://
         .unwrap();
         assert!(effective.lookup("large-v3-turbo").is_none());
         assert!(effective.lookup("turbo").is_none());
+    }
+
+    /// One STT disable entry per name, in a deployment document.
+    fn disable_entries(names: &[&str]) -> CatalogueDocument {
+        let mut text = String::from("schema_version = 1\n");
+        for name in names {
+            text.push_str(&format!(
+                r#"[[model]]
+id = "{name}"
+direction = "stt"
+provider = "local"
+enabled = false
+tier = "supported"
+origin = {{ kind = "downloadable_local", filename = "unused.bin", url = "https://example.invalid/unused.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }}
+"#
+            ));
+        }
+        CatalogueDocument::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn disabling_a_model_and_its_alias_together_is_accepted() {
+        for names in [["large-v3", "large"], ["large", "large-v3"]] {
+            let effective = EffectiveCatalogue::from_documents(
+                builtin_document().unwrap(),
+                Some((disable_entries(&names), PathBuf::from("/tmp/deploy.toml"))),
+            )
+            .unwrap();
+            assert!(effective.lookup("large-v3").is_none(), "{names:?}");
+            assert!(effective.lookup("large").is_none(), "{names:?}");
+        }
+        // A name that never existed still fails closed.
+        assert!(EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((
+                disable_entries(&["large-v3", "no-such-model"]),
+                PathBuf::from("/tmp/deploy.toml"),
+            )),
+        )
+        .is_err());
+    }
+
+    #[cfg(feature = "tts")]
+    #[test]
+    fn stt_disable_entry_cannot_remove_a_tts_record() {
+        // The entry declares `direction = "stt"`, so only the matched record's
+        // direction can stop it from silently dropping a TTS pack.
+        for name in ["kokoro-82m-int8", "kitten-nano-int8"] {
+            let err = EffectiveCatalogue::from_documents(
+                builtin_document().unwrap(),
+                Some((disable_entries(&[name]), PathBuf::from("/tmp/deploy.toml"))),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not an STT model"), "{name}: {err}");
+        }
     }
 
     #[test]
