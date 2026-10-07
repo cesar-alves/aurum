@@ -105,7 +105,9 @@ records (such as the Portuguese specialists) are reachable through an explicit
 `[stt].model` / `--model` only; `language` never selects a model. The
 diagnostic catalogue digest covers the effective records and defaults, not the
 deployment file location, so relocating an unchanged catalogue keeps the same
-digest.
+digest. Because a deployment can only narrow, every remaining record reports
+`source = builtin`. The deployment's effect shows as `catalogue_disabled` (the
+canonical ids it disabled) and as a changed digest.
 
 #### Deployment catalogue trust model
 
@@ -113,11 +115,22 @@ digest.
 local speech-to-text models this installation may use.
 
 - **Narrowing only.** A deployment catalogue can disable built-in STT models
-  and choose the default STT model. A disabled model is rejected however it
-  is requested: `--model`, `[stt].model`, `--profile`, `aurum batch`,
-  `aurum converse`, `aurum cache repair` (whatever `[stt].provider` is), or a
-  library host transcribing through `AurumEngine`. When no `[stt].model` is
-  set, every path uses the deployment's `[defaults.stt].global`. Model downloads, cache pins and
+  and choose the default STT model. A disabled model is rejected on every
+  CLI and `AurumEngine` path: `--model`, `[stt].model`, `aurum batch`,
+  `aurum converse`, `aurum cache repair` (whatever `[stt].provider` is), and
+  `AurumEngine` transcription and preload. It is also hidden from
+  `aurum models` and never recommended: `aurum models recommend` and
+  `--profile` fall back to the profile's first enabled alternative, and fail
+  when none is enabled. `aurum cache status` / `verify` still check a disabled
+  model's file on disk, mark it as disabled, and never re-download it.
+  `aurum doctor` reports a configured model that the catalogue disables. When
+  no `[stt].model` is set, every path uses the deployment's
+  `[defaults.stt].global`.
+- **Not covered: `aurum-ffi`.** C/FFI hosts pass model names to the engine
+  directly and do not read a config file, so `[catalogue].path` does not bind
+  them yet. An opt-in engine option for this is tracked in
+  [the deployment records issue](https://github.com/joe-broadhead/aurum/issues/146).
+  An FFI host that must honour the policy has to enforce it itself. Model downloads, cache pins and
   TTS selection still come from the built-in catalogue, so a deployment record
   that adds or replaces a model, or any TTS record, fails closed. Supporting
   those records is tracked in
@@ -143,10 +156,13 @@ local speech-to-text models this installation may use.
   can write to.
 
 The embedded catalogue is held to a stricter rule. Its URLs may only use the
-reviewed hosts (`huggingface.co`, plus GitHub release assets), and every
-Hugging Face URL must name an immutable revision. GitHub release tags can be
-moved, so for release assets the exact size and SHA-256 pins are the only
-identity; a replaced asset fails verification rather than being used.
+reviewed hosts, and every Hugging Face URL must name an immutable revision.
+GitHub is allowed only for an explicitly reviewed release, which today is
+`thewh1teagle/kokoro-onnx` tag `model-files-v1.0` (the Kokoro ONNX model and
+voices). Release tags can be moved, so for those assets the exact size and
+SHA-256 pins are the identity. Both are enforced when the file is downloaded
+and every time the cache is verified, so a replaced or truncated asset fails
+closed rather than being used.
 
 ### `local_only`
 
