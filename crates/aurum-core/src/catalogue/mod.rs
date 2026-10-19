@@ -80,7 +80,11 @@ pub struct CatalogueRecord {
     pub notes: String,
     #[serde(default)]
     pub license: String,
-    pub origin: Origin,
+    /// Required for an enabled record. A disable entry (`enabled = false`) must
+    /// **not** carry one: none of those pins would ever be fetched or compared,
+    /// so restating them would only look authoritative.
+    #[serde(default)]
+    pub origin: Option<Origin>,
 }
 
 fn enabled() -> bool {
@@ -263,7 +267,26 @@ impl CatalogueDocument {
             for language in &record.languages {
                 validate_language(language)?;
             }
-            validate_origin(record)?;
+            match (record.enabled, &record.origin) {
+                (true, Some(origin)) => validate_origin(record, origin)?,
+                (true, None) => {
+                    return Err(config_error(format!(
+                        "catalogue record '{}' must declare an origin",
+                        record.id
+                    )))
+                }
+                // An operator who only wants to disable a built-in model should
+                // not have to restate URL/size/SHA pins that are never fetched or
+                // compared; accepting them would make dead pins look authoritative.
+                (false, Some(_)) => {
+                    return Err(config_error(format!(
+                        "catalogue record '{}' is a disable entry (`enabled = false`) and must \
+                         not declare an origin: its pins are never fetched or compared",
+                        record.id
+                    )))
+                }
+                (false, None) => {}
+            }
         }
         for record in &self.records {
             for alias in &record.aliases {
@@ -446,6 +469,28 @@ impl EffectiveCatalogue {
             .ok_or_else(|| config_error(format!("default '{id}' is unavailable")))
     }
 
+    /// Reject a local STT model this catalogue does not contain.
+    ///
+    /// This is the narrowing policy a local provider enforces when a deployment
+    /// catalogue is loaded, so a disabled model is refused before any download
+    /// or load however the provider was constructed.
+    pub fn check_stt_model_allowed(&self, model: &str) -> Result<()> {
+        if self.resolve(Direction::Stt, Some(model), None).is_ok() {
+            return Ok(());
+        }
+        Err(UserError::InvalidModel {
+            model: model.to_string(),
+            available: self
+                .records
+                .iter()
+                .filter(|entry| entry.record.direction == Direction::Stt)
+                .map(|entry| entry.record.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+        .into())
+    }
+
     fn lookup_direction(&self, id: &str, direction: Direction) -> Option<&EffectiveRecord> {
         self.lookup(id)
             .filter(|entry| entry.record.direction == direction)
@@ -614,8 +659,8 @@ fn normalize_language(language: &str) -> Result<String> {
         .map(|tag| tag.to_string())
         .map_err(|_| config_error(format!("invalid BCP-47 language tag '{language}'")))
 }
-fn validate_origin(record: &CatalogueRecord) -> Result<()> {
-    match &record.origin {
+fn validate_origin(record: &CatalogueRecord, origin: &Origin) -> Result<()> {
+    match origin {
         Origin::DownloadableLocal {
             filename,
             url,
@@ -704,7 +749,11 @@ enum UrlKind {
     PreparationSource,
 }
 fn record_urls(record: &CatalogueRecord) -> Vec<(&str, UrlKind)> {
-    match &record.origin {
+    let Some(origin) = record.origin.as_ref() else {
+        // A disable entry carries no origin; nothing is ever fetched for it.
+        return Vec::new();
+    };
+    match origin {
         Origin::DownloadableLocal { url, .. } => vec![(url.as_str(), UrlKind::Download)],
         Origin::PreparedLocal { source_url, .. } => {
             vec![(source_url.as_str(), UrlKind::PreparationSource)]
@@ -880,7 +929,11 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
                     record.id == model.name || record.aliases.iter().any(|a| a == model.name)
                 })
                 .unwrap_or_else(|| panic!("{} missing from model-catalogue.v1.toml", model.name));
-            let (filename, size_bytes, sha256) = match &record.origin {
+            let origin = record
+                .origin
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no origin", model.name));
+            let (filename, size_bytes, sha256) = match origin {
                 Origin::DownloadableLocal {
                     filename,
                     size_bytes,
@@ -915,7 +968,7 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             assert_eq!(record.tier, tier, "{} tier drift", model.name);
             // The URL a reviewer reads is the URL the downloader fetches.
             let manifest = crate::model::artifact_manifest_json(model);
-            match &record.origin {
+            match origin {
                 Origin::DownloadableLocal { url, .. } => assert_eq!(
                     manifest["download_url_template"],
                     url.as_str(),
@@ -967,7 +1020,10 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
                 max_phoneme_tokens,
                 sample_rate_hz,
                 shipped,
-            } = &record.origin
+            } = record
+                .origin
+                .as_ref()
+                .expect("built-in tts record has an origin")
             else {
                 panic!("{} is not a tts_pack", model.id);
             };
@@ -1176,7 +1232,6 @@ direction = "stt"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://example.com/tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 "#;
 
     #[test]
@@ -1198,6 +1253,77 @@ origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://ex
     }
 
     #[test]
+    fn disable_entry_must_not_declare_an_origin() {
+        // Restating URL/size/SHA on a record that is only disabled would publish
+        // pins that are never fetched or compared.
+        let with_origin = format!(
+            r#"{DISABLE_TINY}origin = {{ kind = "downloadable_local", filename = "tiny.bin", url = "https://example.invalid/tiny.bin", size_bytes = 1, sha256 = "{}" }}
+"#,
+            "a".repeat(64)
+        );
+        let err = CatalogueDocument::parse(&with_origin)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must not declare an origin"), "{err}");
+    }
+
+    #[test]
+    fn enabled_record_must_declare_an_origin() {
+        let no_origin = r#"schema_version = 1
+[[model]]
+id = "tiny"
+direction = "stt"
+provider = "local"
+tier = "supported"
+"#;
+        let err = CatalogueDocument::parse(no_origin).unwrap_err().to_string();
+        assert!(err.contains("must declare an origin"), "{err}");
+    }
+
+    /// The example in `docs/guide/configuration.md` must stay loadable: it is
+    /// what an operator copies into a deployment catalogue.
+    #[test]
+    fn documented_disable_example_loads() {
+        let document = CatalogueDocument::parse(
+            r#"schema_version = 1
+
+[defaults.stt]
+global = "small"
+
+[[model]]
+id = "base"
+direction = "stt"
+provider = "local"
+tier = "supported"
+enabled = false
+
+[[model]]
+id = "turbo"
+direction = "stt"
+provider = "local"
+tier = "supported"
+enabled = false
+"#,
+        )
+        .unwrap();
+        let effective = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((document, PathBuf::from("/tmp/deploy.toml"))),
+        )
+        .unwrap();
+        assert!(effective.lookup("base").is_none());
+        assert!(effective.lookup("large-v3-turbo").is_none());
+        assert_eq!(
+            effective
+                .resolve(Direction::Stt, None, None)
+                .unwrap()
+                .record
+                .id,
+            "small"
+        );
+    }
+
+    #[test]
     fn deployment_cannot_add_replace_or_touch_tts_records() {
         let sha = "a".repeat(64);
         let stt = |id: &str| {
@@ -1212,17 +1338,17 @@ origin = {{ kind = "downloadable_local", filename = "x.bin", url = "https://exam
 "#
             )
         };
-        let tts = format!(
-            r#"schema_version = 1
+        // A TTS disable entry needs no origin (and must not declare one), so it
+        // fails for the intended reason: a deployment cannot touch TTS records.
+        let tts = r#"schema_version = 1
 [[model]]
 id = "kitten-nano-int8"
 direction = "tts"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = {{ kind = "tts_pack", adapter = "kitten-onnx-v1", files = [{{ filename = "m.onnx", url = "https://example.invalid/m.onnx", size_bytes = 1, sha256 = "{sha}" }}], voices = [{{ id = "v", internal_key = "v", language = "en" }}], max_phoneme_tokens = 1, sample_rate_hz = 1, shipped = true }}
 "#
-        );
+        .to_string();
         for (case, document) in [
             ("new id", stt("deployment-only")),
             ("replacement", stt("base")),
@@ -1318,15 +1444,17 @@ origin = { kind = "downloadable_local", filename = "remote.bin", url = "https://
 
     #[test]
     fn alias_disable_removes_the_canonical_record() {
-        let deployment = CatalogueDocument::parse(r#"schema_version = 1
+        let deployment = CatalogueDocument::parse(
+            r#"schema_version = 1
 [[model]]
 id = "turbo"
 direction = "stt"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = { kind = "downloadable_local", filename = "unused.bin", url = "https://example.invalid/unused.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let effective = EffectiveCatalogue::from_documents(
             builtin_document().unwrap(),
             Some((deployment, PathBuf::from("/tmp/deploy.toml"))),
@@ -1347,7 +1475,6 @@ direction = "stt"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = {{ kind = "downloadable_local", filename = "unused.bin", url = "https://example.invalid/unused.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }}
 "#
             ));
         }

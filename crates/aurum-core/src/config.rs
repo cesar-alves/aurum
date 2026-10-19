@@ -1150,25 +1150,7 @@ impl Config {
         if self.catalogue_path.is_none() {
             return Ok(());
         }
-        if self
-            .catalogue
-            .resolve(crate::catalogue::Direction::Stt, Some(model), None)
-            .is_ok()
-        {
-            return Ok(());
-        }
-        Err(UserError::InvalidModel {
-            model: model.to_string(),
-            available: self
-                .catalogue
-                .records()
-                .iter()
-                .filter(|record| record.record.direction == crate::catalogue::Direction::Stt)
-                .map(|record| record.record.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        }
-        .into())
+        self.catalogue.check_stt_model_allowed(model)
     }
 
     /// Predicate form of [`Self::check_local_model_allowed`], for listings and
@@ -2108,7 +2090,6 @@ direction = "stt"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = { kind = "downloadable_local", filename = "tiny.bin", url = "https://example.invalid/tiny.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 "#;
 
     #[test]
@@ -2199,7 +2180,6 @@ direction = "stt"
 provider = "local"
 enabled = false
 tier = "supported"
-origin = { kind = "downloadable_local", filename = "base.bin", url = "https://example.invalid/base.bin", size_bytes = 1, sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
 "#;
 
     fn load_with_deployment(catalogue_toml: &str, extra_config: &str) -> (TempDir, Config) {
