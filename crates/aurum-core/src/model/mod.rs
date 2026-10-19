@@ -324,11 +324,35 @@ pub fn format_model_list_with(
     out.push_str(&format!(
         "Default model: `{default_model}`{default_size}. Use --model <name> to choose.\n"
     ));
-    out.push_str(
-        "Guidance (single-clip dogfood, not formal WER): English lecture quality often \
-         favors `small.en` or `large-v3-turbo`; prefer `.en` variants for English-only audio. \
-         Avoid `large-v3-q5_0` for production (experimental).\n",
-    );
+    // Guidance must never name a model the effective catalogue rejects, or it
+    // would recommend what every selection path refuses.
+    let small = allowed("small.en");
+    let turbo = allowed("large-v3-turbo");
+    let mut guidance = String::new();
+    if small || turbo {
+        guidance.push_str(
+            "Guidance (single-clip dogfood, not formal WER): English lecture quality often favors ",
+        );
+        match (small, turbo) {
+            (true, true) => guidance.push_str("`small.en` or `large-v3-turbo`"),
+            (true, false) => guidance.push_str("`small.en`"),
+            _ => guidance.push_str("`large-v3-turbo`"),
+        }
+        guidance.push('.');
+        if small {
+            guidance.push_str(" Prefer `.en` variants for English-only audio.");
+        }
+    }
+    if allowed("large-v3-q5_0") {
+        if !guidance.is_empty() {
+            guidance.push(' ');
+        }
+        guidance.push_str("Avoid `large-v3-q5_0` for production (experimental).");
+    }
+    if !guidance.is_empty() {
+        guidance.push('\n');
+        out.push_str(&guidance);
+    }
     out
 }
 
@@ -1015,6 +1039,26 @@ mod tests {
         assert!(!list.lines().any(|l| l.starts_with("tiny-q5_1 ")));
         assert!(list.lines().any(|l| l.starts_with("tiny ")));
         assert!(list.contains("Default model: `small`"));
+    }
+
+    #[test]
+    fn guidance_only_names_models_the_catalogue_allows() {
+        let all = format_model_list(Path::new("/tmp/aurum-cache-test"));
+        assert!(all.contains("`small.en` or `large-v3-turbo`"), "{all}");
+        assert!(all.contains("Avoid `large-v3-q5_0`"), "{all}");
+
+        // A deployment that disables every model the guidance used to name must
+        // not still be recommended what `--model` would reject.
+        let denied = ["small.en", "large-v3-turbo", "large-v3-q5_0"];
+        let list = format_model_list_with(
+            Path::new("/tmp/aurum-cache-test"),
+            |m| !denied.contains(&m),
+            "base",
+        );
+        assert!(!list.contains("`small.en`"), "{list}");
+        assert!(!list.contains("`large-v3-turbo`"), "{list}");
+        assert!(!list.contains("`large-v3-q5_0`"), "{list}");
+        assert!(!list.contains("Guidance"), "{list}");
     }
 
     #[test]
