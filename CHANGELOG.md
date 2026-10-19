@@ -28,10 +28,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`medium-ptbr-q5_0`, `large-v3-ptpt-q5_0`) are reachable only via an explicit
   `--model` / `[stt].model`. A disabled model is hidden from `aurum models`,
   is never recommended or picked by `--profile` (the profile's first enabled
-  alternative is used instead), is rejected by `AurumEngine` preload, is marked
+  alternative is used instead), is rejected by `AurumEngine` transcription,
+  preload and the `local_whisper()` / `stt_provider(local)` accessors, is marked
   disabled by `aurum cache status|verify`, and is reported by `aurum doctor`.
-  `aurum models` names the effective default. `aurum-ffi` hosts are not bound
-  by `[catalogue].path` yet (#146).
+  `aurum models` names the effective default and only recommends models the
+  catalogue still allows. A disable entry needs no `origin`; declaring one is
+  an error, so no unused pins are published. `aurum-ffi` engine hosts are not
+  bound by `[catalogue].path` yet (#146) except `aurum_doctor_json`, which
+  loads the config.
+
+### Changed
+
+- **Rust API (`aurum-core`):** the model catalogue adds four source-breaking or
+  additive changes. `SttSection::model` is now `Option<String>` (it was
+  `String`), so "no model configured" is distinguishable from a configured id
+  and a deployment default applies. `tts::catalogue::PackFile::approx_bytes`
+  is now `size_bytes`. `tts::catalogue::TtsModelInfo` gains `hf_revision`.
+  `cache::CacheEntry` gains `enabled`, which is omitted when `true` so existing
+  output is unchanged. Downstream code that constructs `SttSection` or reads
+  `approx_bytes` needs updating.
 
 ### Fixed
 

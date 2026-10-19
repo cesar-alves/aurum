@@ -96,7 +96,7 @@ quality, hallucination, and quantization evidence is reviewed.
 
 Recommended pairing: `medium-ptbr-q5_0` for Brazilian Portuguese audio and
 `large-v3-ptpt-q5_0` for European Portuguese audio. The Brazilian model
-downloads (~539 MB) on first explicit use. Selecting the European Portuguese
+downloads (~514 MB) on first explicit use. Selecting the European Portuguese
 model before running the command above fails with preparation guidance and
 never attempts a download.
 

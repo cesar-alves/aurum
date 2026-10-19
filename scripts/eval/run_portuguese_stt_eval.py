@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Run the pinned Portuguese STT corpus through a local Aurum model matrix."""
+"""Run the pinned Portuguese STT corpus through a local Aurum model matrix.
+
+The runner must measure the local model only, so it pins every flag that an
+operator's config file could otherwise change: `--provider local` (never a
+remote STT provider), `--output txt` (a configured `srt`/`json` output would
+corrupt the hypothesis read back below) and `--cleanup raw --cleanup-provider
+rules` (a configured cleanup could rewrite the transcript, or send the audio and
+transcripts to OpenRouter while the row still claims `"provider": "local"`).
+"""
 
 from __future__ import annotations
 
@@ -229,6 +237,16 @@ def main() -> None:
                 "pt",
                 "--output-file",
                 str(transcript),
+                # Pin the measurement: never inherit a configured provider,
+                # output format or cleanup backend.
+                "--provider",
+                "local",
+                "--output",
+                "txt",
+                "--cleanup",
+                "raw",
+                "--cleanup-provider",
+                "rules",
             ]
             started = time.perf_counter()
             process = subprocess.run(command, capture_output=True, text=True)
