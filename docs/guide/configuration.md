@@ -86,10 +86,10 @@ provider = "rules"         # rules | openrouter
 # [providers.xai]
 
 # An optional reviewed deployment catalogue. It can only narrow the built-in
-# catalogue: an `enabled = false` record disables a built-in STT model (by
-# canonical id or alias), and `[defaults.stt].global` picks the default from
-# the remaining `supported` records (never experimental). Records that add or
-# replace a model, and TTS records, are rejected for now.
+# catalogue: an `enabled = false` entry disables a built-in STT model (by
+# canonical id or alias) and needs no origin, and `[defaults.stt].global` picks
+# the default from the remaining `supported` records (never experimental).
+# Records that add or replace a model, and TTS records, are rejected for now.
 # The path is explicit: Aurum never discovers, fetches, or falls back from it.
 # A relative path resolves against this config file's directory (not the cwd).
 # [catalogue]
@@ -117,30 +117,57 @@ local speech-to-text models this installation may use.
 - **Narrowing only.** A deployment catalogue can disable built-in STT models
   and choose the default STT model. A disabled model is rejected on every
   CLI and `AurumEngine` path: `--model`, `[stt].model`, `aurum batch`,
-  `aurum converse`, `aurum cache repair` (whatever `[stt].provider` is), and
-  `AurumEngine` transcription and preload. It is also hidden from
-  `aurum models` and never recommended: `aurum models recommend` and
-  `--profile` fall back to the profile's first enabled alternative, and fail
-  when none is enabled. `aurum cache status` / `verify` still check a disabled
-  model's file on disk, mark it as disabled, and never re-download it.
-  `aurum doctor` reports a configured model that the catalogue disables. When
-  no `[stt].model` is set, every path uses the deployment's
-  `[defaults.stt].global`.
-- **Not covered: `aurum-ffi`.** C/FFI hosts pass model names to the engine
-  directly and do not read a config file, so `[catalogue].path` does not bind
-  them yet. An opt-in engine option for this is tracked in
+  `aurum converse`, `aurum cache repair` (whatever `[stt].provider` is),
+  `AurumEngine` transcription and preload, and the raw
+  `AurumEngine::local_whisper()` / `stt_provider(local)` accessors, whose
+  provider carries the policy into its own `preload` and `transcribe`. It is
+  also hidden from `aurum models` and never recommended: `aurum models
+  recommend` and `--profile` fall back to the profile's first enabled
+  alternative, and fail when none is enabled. `aurum models` only names a
+  model the catalogue still allows, in the table and in its closing guidance.
+  `aurum cache status` / `verify` still check a disabled model's file on disk,
+  mark it as disabled, and never re-download it. `aurum doctor` reports a
+  configured model that the catalogue disables. When no `[stt].model` is set,
+  every path uses the deployment's `[defaults.stt].global`.
+- **Not covered: `aurum-ffi` engines.** C/FFI hosts build their engine without
+  a config file, so `[catalogue].path` does not bind FFI transcription, jobs or
+  preload yet. An FFI host that must honour the policy has to enforce it
+  itself. `aurum_doctor_json` is the exception: it calls `Config::load()`, so
+  its report does reflect the configured catalogue. An opt-in engine option for
+  the rest is tracked in
   [the deployment records issue](https://github.com/joe-broadhead/aurum/issues/146).
-  An FFI host that must honour the policy has to enforce it itself. Model downloads, cache pins and
-  TTS selection still come from the built-in catalogue, so a deployment record
-  that adds or replaces a model, or any TTS record, fails closed. Supporting
-  those records is tracked in
-  [the deployment records issue](https://github.com/joe-broadhead/aurum/issues/146).
-- **Disable entries.** A disable entry uses the full v1 record schema, so it
-  still needs a syntactically valid origin (HTTPS URL, nonzero size, 64-hex
-  SHA-256). Those values are only validated, never fetched or compared with the
-  built-in pins: the entry matches a built-in STT model by id or alias and
-  removes it. An entry that names a TTS model is rejected. Disabling a model
-  and one of its aliases in the same file is accepted.
+  Model downloads, cache pins and TTS selection still come from the built-in
+  catalogue, so a deployment record that adds or replaces a model, or any TTS
+  record, fails closed. Supporting those records is tracked in the same issue.
+- **Disable entries.** A disable entry names a built-in STT model and keeps the
+  schema's required fields (`id`, `direction`, `provider`, `tier`), but needs no
+  `origin`: declaring one is an error, because those pins would never be fetched
+  or compared with the built-in pins.
+
+  ```toml
+  schema_version = 1
+
+  [defaults.stt]
+  global = "small"
+
+  [[model]]
+  id = "base"
+  direction = "stt"
+  provider = "local"
+  tier = "supported"
+  enabled = false
+
+  [[model]]
+  id = "turbo"          # alias of `large-v3-turbo`
+  direction = "stt"
+  provider = "local"
+  tier = "supported"
+  enabled = false
+  ```
+
+  The entry matches a built-in STT model by id or alias and removes it. An
+  entry that names a TTS model is rejected. Disabling a model and one of its
+  aliases in the same file is accepted.
 - **Path resolution.** A relative path resolves against the directory of the
   config file that names it. It never resolves against the process working
   directory, and it is an error when no config file is in use. An absolute
