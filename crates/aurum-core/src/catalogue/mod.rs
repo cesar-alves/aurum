@@ -442,8 +442,9 @@ impl EffectiveCatalogue {
     pub fn disabled(&self) -> &[String] {
         &self.disabled
     }
-    /// Digest of the canonical serialized effective records for diagnostics and
-    /// resumable batch fingerprints.
+    /// Digest of the canonical serialized effective records and defaults, for
+    /// diagnostics and identity. Batch fingerprints do not read it: they hash
+    /// each source snapshot instead (see #146).
     pub fn digest(&self) -> &str {
         &self.digest
     }
@@ -651,6 +652,8 @@ fn merge_defaults(target: &mut DirectionDefaults, incoming: DirectionDefaults) {
 fn validate_id(value: &str, field: &str) -> Result<()> {
     let valid = !value.is_empty()
         && value.len() <= 128
+        && value != "."
+        && value != ".."
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
@@ -933,6 +936,21 @@ tier = "supported"
 origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://example.invalid/bad.bin", size_bytes = 1, sha256 = "UPPERCASE" }
 "#;
         assert!(CatalogueDocument::parse(invalid).is_err());
+    }
+
+    /// `.` and `..` are relative path components, not identifiers. #146 will
+    /// reuse this rule, so it must hold for every id-shaped field.
+    #[test]
+    fn ids_aliases_and_voice_ids_reject_relative_path_components() {
+        for field in ["model id", "alias", "voice id", "default model id"] {
+            for bad in [".", ".."] {
+                assert!(validate_id(bad, field).is_err(), "{field}: {bad}");
+            }
+            assert!(validate_id("large-v3", field).is_ok(), "{field}");
+            assert!(validate_id("pt.BR", field).is_ok(), "{field}");
+        }
+        let document = "schema_version = 1\n[[model]]\nid = \"..\"\ndirection = \"stt\"\nprovider = \"local\"\nenabled = false\ntier = \"supported\"\n";
+        assert!(CatalogueDocument::parse(document).is_err());
     }
 
     #[test]
