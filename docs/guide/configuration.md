@@ -129,8 +129,15 @@ local speech-to-text models this installation may use.
   mark it as disabled, and never re-download it. `aurum doctor` reports a
   configured model that the catalogue disables. A rejected id says it was
   disabled by the deployment catalogue (`[catalogue].path`); only a name the
-  catalogue never contained is reported as an unknown model. When no
-  `[stt].model` is set, every path uses the deployment's `[defaults.stt].global`.
+  catalogue never contained is reported as an unknown model.
+- **Where the default applies.** When no `[stt].model` is set, every CLI path
+  and every `AurumEngine` request that resolves a model through `Config` uses
+  the deployment's `[defaults.stt].global`, as does a projected
+  `aurum_core::AurumConfig`. A library host that constructs
+  `TranscriptionOptions::default()` still asks for the built-in `base`: that
+  default cannot read a config, and a deployment that disables `base` therefore
+  rejects the request instead of silently choosing another model. Pass
+  `config.default_local_stt_model()` (or an explicit model) in that case.
 - **Not covered: `aurum-ffi` engines.** C/FFI hosts build their engine without
   a config file, so `[catalogue].path` does not bind FFI transcription, jobs or
   preload yet. An FFI host that must honour the policy has to enforce it
