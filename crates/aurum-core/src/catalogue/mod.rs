@@ -19,6 +19,12 @@ pub const MAX_CATALOGUE_BYTES: u64 = 1024 * 1024;
 const BUILTIN_TOML: &str = include_str!("model-catalogue.v1.toml");
 /// Tracks honouring deployment add/replace and TTS records.
 const DEPLOYMENT_RECORDS_ISSUE: &str = "https://github.com/joe-broadhead/aurum/issues/146";
+/// Adapter ids a catalogue record may pin.
+///
+/// Lives here rather than in the feature-gated `tts::adapter` module because
+/// the embedded document is parsed and validated even when the TTS feature is
+/// off. That registry delegates to this list, so the two cannot drift.
+pub(crate) const TTS_ADAPTER_IDS: &[&str] = &["kitten-onnx-v1", "kokoro-onnx-v0", "fake-sine-v1"];
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -714,10 +720,8 @@ fn validate_origin(record: &CatalogueRecord, origin: &Origin) -> Result<()> {
                     "tts_pack origins require direction=tts and provider=local",
                 ));
             }
-            if !matches!(
-                adapter.as_str(),
-                "kitten-onnx-v1" | "kokoro-onnx-v0" | "placeholder-v0"
-            ) || files.is_empty()
+            if !TTS_ADAPTER_IDS.contains(&adapter.as_str())
+                || files.is_empty()
                 || voices.is_empty()
                 || *max_phoneme_tokens == 0
                 || *sample_rate_hz == 0
@@ -1077,6 +1081,44 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
             .filter(|record| record.direction == Direction::Tts)
             .count();
         assert_eq!(tts_records, shipped.len(), "TOML has unshipped TTS records");
+    }
+
+    /// The catalogue's adapter allowlist is the adapter registry's id set
+    /// (`crate::catalogue::TTS_ADAPTER_IDS`), so a registered adapter is
+    /// accepted and an unregistered placeholder id is not.
+    #[test]
+    fn tts_adapter_ids_come_from_the_registered_set() {
+        let document = |adapter: &str| {
+            format!(
+                r#"schema_version = 1
+[[model]]
+id = "pack"
+direction = "tts"
+provider = "local"
+tier = "supported"
+languages = ["en"]
+license = "Apache-2.0"
+[model.origin]
+kind = "tts_pack"
+adapter = "{adapter}"
+max_phoneme_tokens = 64
+sample_rate_hz = 24000
+shipped = true
+[[model.origin.files]]
+filename = "pack.onnx"
+url = "https://example.invalid/pack.onnx"
+size_bytes = 1
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[[model.origin.voices]]
+id = "voice"
+internal_key = "key"
+language = "en"
+"#
+            )
+        };
+        assert!(CatalogueDocument::parse(&document("kitten-onnx-v1")).is_ok());
+        assert!(CatalogueDocument::parse(&document("fake-sine-v1")).is_ok());
+        assert!(CatalogueDocument::parse(&document("placeholder-v0")).is_err());
     }
 
     #[test]
