@@ -567,8 +567,15 @@ pub struct EffectiveConfigDiagnostic {
     pub tts_pack_dir: Option<String>,
     pub tts_allow_unverified: bool,
     pub tts_custom_model_ids: Vec<String>,
+    /// Defaulted so a support bundle written before the catalogue diagnostic
+    /// existed still decodes under `SUPPORT_BUNDLE_VERSION = 1`.
+    #[serde(default)]
     pub catalogue_path: Option<String>,
+    /// `sha256` of the effective records; empty in a pre-catalogue bundle.
+    #[serde(default)]
     pub catalogue_digest: String,
+    /// Empty in a pre-catalogue bundle.
+    #[serde(default)]
     pub catalogue_records: Vec<CatalogueRecordDiagnostic>,
     /// Built-in models the deployment catalogue disabled (canonical ids).
     #[serde(default)]
