@@ -165,6 +165,10 @@ pub struct EffectiveCatalogue {
     /// #146 a deployment can only narrow, so this (with the digest) is where
     /// its effect is visible: every remaining record's source is `Builtin`.
     disabled: Vec<String>,
+    /// Lowercase canonical ids and aliases the deployment removed. Kept so a
+    /// rejection can name the policy instead of reporting an unknown model;
+    /// `disabled` stays canonical-only for the public accessor.
+    disabled_names: BTreeSet<String>,
     /// Computed once at construction so reading it can never fail or panic.
     digest: String,
 }
@@ -355,6 +359,7 @@ impl EffectiveCatalogue {
             .collect::<Result<_>>()?;
         let mut defaults = builtin.defaults;
         let mut disabled_ids: Vec<String> = Vec::new();
+        let mut disabled_names: BTreeSet<String> = BTreeSet::new();
         if let Some((deployment, _path)) = deployment {
             deployment.validate()?;
             reject_widening_deployment(&deployment)?;
@@ -397,6 +402,11 @@ impl EffectiveCatalogue {
             // global retains the built-in default.
             merge_defaults(&mut defaults.stt, deployment.defaults.stt);
             merge_defaults(&mut defaults.tts, deployment.defaults.tts);
+            for entry in &disabled {
+                for name in std::iter::once(&entry.record.id).chain(&entry.record.aliases) {
+                    disabled_names.insert(name.to_ascii_lowercase());
+                }
+            }
             disabled_ids = disabled.into_iter().map(|entry| entry.record.id).collect();
             disabled_ids.sort();
         }
@@ -418,6 +428,7 @@ impl EffectiveCatalogue {
             records,
             defaults,
             disabled: disabled_ids,
+            disabled_names,
             digest,
         };
         effective.validate_effective()?;
@@ -483,6 +494,13 @@ impl EffectiveCatalogue {
     pub fn check_stt_model_allowed(&self, model: &str) -> Result<()> {
         if self.resolve(Direction::Stt, Some(model), None).is_ok() {
             return Ok(());
+        }
+        let name = model.trim();
+        if self.disabled_names.contains(&name.to_ascii_lowercase()) {
+            return Err(UserError::ModelDisabled {
+                model: name.to_string(),
+            }
+            .into());
         }
         Err(UserError::InvalidModel {
             model: model.to_string(),
@@ -1568,6 +1586,49 @@ tier = "supported"
             )),
         )
         .is_err());
+    }
+
+    /// A model the deployment disabled is a policy decision, not a typo: the
+    /// error must say so, keep the model's category, and leave genuinely
+    /// unknown ids on `InvalidModel`.
+    #[test]
+    fn a_disabled_model_reports_the_policy_not_an_unknown_id() {
+        let effective = EffectiveCatalogue::from_documents(
+            builtin_document().unwrap(),
+            Some((
+                disable_entries(&["large"]),
+                PathBuf::from("/tmp/deploy.toml"),
+            )),
+        )
+        .unwrap();
+        // Disabled by alias and by canonical id: both name the policy.
+        for name in ["large", "large-v3", "LARGE-V3", " large "] {
+            let err = effective.check_stt_model_allowed(name).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    crate::error::AurumError::User(UserError::ModelDisabled { model })
+                        if model == name.trim()
+                ),
+                "{name}: {err}"
+            );
+            assert!(err.to_string().contains("[catalogue].path"), "{err}");
+            // Frozen surfaces: the category and exit code do not move.
+            assert_eq!(
+                err.error_category(),
+                crate::error::ErrorCategory::ModelUnavailable
+            );
+            assert_eq!(err.exit_code(), 2);
+        }
+        // An id that is not in the catalogue at all stays an unknown model.
+        let err = effective.check_stt_model_allowed("tiny-nope").unwrap_err();
+        assert!(matches!(
+            &err,
+            crate::error::AurumError::User(UserError::InvalidModel { .. })
+        ));
+        assert!(err.to_string().contains("unknown local model"), "{err}");
+        // An enabled model still passes.
+        assert!(effective.check_stt_model_allowed("tiny").is_ok());
     }
 
     #[cfg(feature = "tts")]

@@ -2292,7 +2292,11 @@ tier = "supported"
         cfg.local_only = true;
         let engine = crate::engine::AurumEngine::from_config(cfg).unwrap();
         let err = engine.preload_stt("tiny").await.unwrap_err().to_string();
-        assert!(err.contains("unknown local model: tiny"), "{err}");
+        assert!(
+            err.contains("model 'tiny' is disabled by the deployment catalogue"),
+            "{err}"
+        );
+        assert!(!err.contains("unknown local model"), "{err}");
     }
 
     fn load_with_deployment_free() -> (TempDir, Config) {
