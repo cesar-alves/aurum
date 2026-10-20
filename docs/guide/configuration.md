@@ -127,8 +127,10 @@ local speech-to-text models this installation may use.
   model the catalogue still allows, in the table and in its closing guidance.
   `aurum cache status` / `verify` still check a disabled model's file on disk,
   mark it as disabled, and never re-download it. `aurum doctor` reports a
-  configured model that the catalogue disables. When no `[stt].model` is set,
-  every path uses the deployment's `[defaults.stt].global`.
+  configured model that the catalogue disables. A rejected id says it was
+  disabled by the deployment catalogue (`[catalogue].path`); only a name the
+  catalogue never contained is reported as an unknown model. When no
+  `[stt].model` is set, every path uses the deployment's `[defaults.stt].global`.
 - **Not covered: `aurum-ffi` engines.** C/FFI hosts build their engine without
   a config file, so `[catalogue].path` does not bind FFI transcription, jobs or
   preload yet. An FFI host that must honour the policy has to enforce it
