@@ -1026,6 +1026,14 @@ origin = { kind = "downloadable_local", filename = "bad.bin", url = "https://exa
                 }
                 _ => unreachable!(),
             }
+            // The licence a reviewer reads in the TOML is the one the artifact
+            // manifest publishes; `model_artifact_license` is hand-maintained.
+            assert_eq!(
+                manifest["license"].as_str(),
+                Some(record.license.as_str()),
+                "{} licence drift",
+                model.name
+            );
         }
         // And nothing in the TOML is unknown to the legacy download path.
         for record in &stt {

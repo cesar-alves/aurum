@@ -829,6 +829,11 @@ fn model_artifact_source(info: &ModelInfo) -> ModelArtifactSource {
     }
 }
 
+/// The reviewed licence for a built-in STT record.
+///
+/// `model-catalogue.v1.toml` is the source of truth; the parity test
+/// (`catalogue::tests::toml_stt_records_match_the_legacy_table_exactly`)
+/// compares this against the TOML so a licence edit cannot silently drift.
 fn model_artifact_license(info: &ModelInfo) -> &'static str {
     match info.filename {
         "whisper-medium-ptbr-q5_0.bin" | "ggml-large-v3-ptpt-q5_0.bin" => "Apache-2.0",
