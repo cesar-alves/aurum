@@ -399,15 +399,48 @@ trait ResolveModelOrDefault {
 
 impl ResolveModelOrDefault for Config {
     fn resolve_model_or_default(&self) -> String {
-        self.model
-            .clone()
-            .unwrap_or_else(|| crate::config::DEFAULT_LOCAL_MODEL.into())
+        if let Some(model) = self.model.as_ref() {
+            return model.clone();
+        }
+        // A deployment catalogue's global default is the local STT default, so
+        // a library host that projects a `Config` does not ask for `base` after
+        // the deployment disabled it. Remote providers keep the compile-time
+        // default: the catalogue is a local-model catalogue.
+        match self.provider.trim().to_ascii_lowercase().as_str() {
+            "local" => self.default_local_stt_model().to_string(),
+            _ => crate::config::DEFAULT_LOCAL_MODEL.into(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Config::load` already fills `model` from the deployment default; this
+    /// covers a host that projects a `Config` it built itself (`model: None`),
+    /// which must not fall back to a `base` the deployment disabled.
+    #[test]
+    fn projected_config_uses_the_deployment_stt_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalogue = dir.path().join("catalogue.toml");
+        std::fs::write(
+            &catalogue,
+            "schema_version = 1\n[defaults.stt]\nglobal = \"tiny-q5_1\"\n",
+        )
+        .unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, format!("[catalogue]\npath = {:?}\n", catalogue)).unwrap();
+        let mut cfg = Config::load_from_required(&config).unwrap();
+        cfg.cache_dir = dir.path().join("cache");
+        // Loaded configs already carry the catalogue default.
+        assert_eq!(cfg.model.as_deref(), Some("tiny-q5_1"));
+        // A host-built projection may leave it unset.
+        cfg.model = None;
+        assert_eq!(cfg.resolve_model_or_default(), "tiny-q5_1");
+        let projected = AurumConfig::try_from_config(cfg).unwrap();
+        assert_eq!(projected.stt.model, "tiny-q5_1");
+    }
 
     #[test]
     fn transcription_request_validation() {
