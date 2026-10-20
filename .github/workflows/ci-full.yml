@@ -1,0 +1,90 @@
+name: CI Full
+
+# The heavy tier starts only when it is asked for, and only on the commit it
+# tests. A push runs the fast checks in ci.yml; this workflow runs the suite in
+# ci-heavy.yml when a person or an agent adds the ci:full label.
+#
+# A job skipped by `if:` reports success, so the guard below is a step that
+# fails, never a job-level `if:`. The labelled event carries the head SHA in its
+# payload, so there is no gap between approval and checkout. ci-label-reset.yml
+# takes the label off on the next push; that is what keeps the heavy tier from
+# running twice, not what makes the result trustworthy. The result is
+# trustworthy because it is reported on the commit it tested, and a new push
+# leaves ci/full missing on the new commit.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-full-${{ github.event.pull_request.number }}
+  # A label event queues behind the run in flight and never cancels it: adding
+  # any other label must not kill a heavy run that is already going.
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+
+jobs:
+  guard:
+    name: ci/full guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      run: ${{ steps.label.outputs.run }}
+    steps:
+      - id: label
+        env:
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ "$ACTION" == "labeled" && "$LABEL" == "ci:full" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "ci:full on $SHA: starting the heavy suite." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## The heavy suite has not run on ${SHA}"
+            echo
+            echo "Every push runs the fast checks. The heavy suite runs once, when it is asked for,"
+            echo "and only on the commit it tests."
+            echo
+            echo '```'
+            echo "gh pr edit $PR --add-label ci:full"
+            echo "gh pr checks $PR --watch --required"
+            echo '```'
+            echo
+            echo "Any new push removes the label and resets this check to Expected."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::ci:full is not set on this commit. Add the ci:full label to run the heavy suite."
+          exit 1
+
+  heavy:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
+    uses: ./.github/workflows/ci-heavy.yml
+    permissions:
+      contents: read
+
+  ci-full:
+    name: ci/full
+    needs: [guard, heavy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          GUARD: ${{ needs.guard.result }}
+          HEAVY: ${{ needs.heavy.result }}
+        run: |
+          echo "guard=$GUARD heavy=$HEAVY"
+          if [[ "$GUARD" == "success" && "$HEAVY" == "success" ]]; then
+            echo "The heavy suite passed on this commit."
+            exit 0
+          fi
+          echo "::error::ci/full failed: guard=$GUARD heavy=$HEAVY"
+          exit 1

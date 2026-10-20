@@ -68,6 +68,29 @@ python3 -m venv .venv && .venv/bin/pip install -r docs/requirements.txt
 ./scripts/version_check.sh
 ```
 
+## CI
+
+Two tiers.
+
+- A push to a pull request runs **only** the fast checks in `.github/workflows/ci.yml`:
+  `Lint`, `msrv`, `STT-only`, `Security`, `Docs`, `provider smoke dry-run`,
+  `observatory recipe check`. Push as often as you need.
+- The heavy suite lives in `.github/workflows/ci-heavy.yml` and starts only when
+  it is asked for: the three-OS `test` matrix, `clean-install`, `miri`,
+  `sanitizer + stress`, `ubsan`, `coverage`, `mutants`, `repro`, `fuzz smoke`,
+  the `rc-*` drills, `security rehearsal` and the macOS local-model integration.
+- When the work is finished and the fast checks are green, start the heavy suite
+  once:
+
+      gh pr edit <N> --add-label ci:full
+      gh pr checks <N> --watch --required
+
+- `ci/full` is the required check. It is posted on the commit the suite tested.
+  Any new push removes the `ci:full` label and leaves `ci/full` missing on the
+  new commit, so trigger it again only when you are done again.
+- Never post commit statuses yourself, never add the label on someone else's
+  pull request without asking, and never merge with `gh pr merge --admin`.
+
 ## Boundaries
 
 **Always do**
