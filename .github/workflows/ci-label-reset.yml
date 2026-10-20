@@ -1,0 +1,35 @@
+name: CI Label Reset
+
+# Takes ci:full off the pull request on every push. Without this the label
+# would stay on and each later push would run the heavy suite again. The reset
+# is about cost; the result is stale-safe because it is reported on the commit
+# it tested, and a new commit starts with ci/full missing.
+
+on:
+  pull_request:
+    types: [synchronize, converted_to_draft]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ci-label-reset-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  drop-label:
+    # A pull request from a fork gets a read-only token and cannot remove a
+    # label. Those pull requests get no reset and must be labelled by a
+    # maintainer for each commit they want tested.
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'ci:full') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr edit "$PR" --remove-label "ci:full" -R "$REPO"

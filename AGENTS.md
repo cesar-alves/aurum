@@ -68,6 +68,34 @@ python3 -m venv .venv && .venv/bin/pip install -r docs/requirements.txt
 ./scripts/version_check.sh
 ```
 
+## CI
+
+Two tiers.
+
+- A push to a pull request runs **only** the fast checks in `.github/workflows/ci.yml`:
+  `Lint`, `msrv`, `STT-only`, `Security`, `Docs`, `provider smoke dry-run`,
+  `observatory recipe check`. Push as often as you need.
+- The heavy suite lives in `.github/workflows/ci-heavy.yml` and starts only when
+  it is asked for: the three-OS `test` matrix, `clean-install`, `miri`,
+  `sanitizer + stress`, `ubsan`, `coverage`, `mutants`, `repro`, `fuzz smoke`,
+  the `rc-*` drills, `security rehearsal` and the macOS local-model integration.
+- When the work is finished and the fast checks are green, start the heavy suite
+  once:
+
+      gh pr edit <N> --add-label ci:full
+      gh pr checks <N> --watch --required
+
+- The heavy suite is advisory, not a toll gate. When nobody adds the label, no
+  heavy job runs and no `ci/full` check is created, so a pull request whose fast
+  checks passed is green and can merge. Adding the label is how you get more
+  evidence before merging, not a permission slip.
+- `ci/full` is the one context to read when the suite has run. It is reported on
+  the commit the suite tested; a new push removes the label, so an old green can
+  never be mistaken for the new commit.
+- A repository can make `ci/full` required in a ruleset. That is the only thing
+  that turns absence into a block; do it deliberately, and never merge with
+  `gh pr merge --admin`.
+
 ## Boundaries
 
 **Always do**

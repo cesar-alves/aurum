@@ -1,0 +1,57 @@
+name: CI Full
+
+# The heavy tier runs only when it is asked for, and only on the commit it
+# tests. It is evidence, not a toll gate: when nobody adds the ci:full label,
+# nothing here runs, no check is created, and a pull request whose fast checks
+# passed is green.
+#
+# A skipped job reports success, which the enforcement trap calls a hole. That
+# is the deliberate trade here: the full suite is advisory unless a ruleset
+# makes ci/full required. If it is ever required, the absence of the check
+# blocks the merge — decide that per repository, in the ruleset, not in here.
+#
+# The labelled event carries the head SHA in its payload, so the run is about
+# the commit the label was added to. ci-label-reset.yml removes the label on the
+# next push, which keeps that claim true and keeps the cost down.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-full-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  heavy:
+    # Any other label, such as `bug`, re-runs the workflow. This line is what
+    # stops it from starting a 90-minute matrix.
+    if: github.event.label.name == 'ci:full'
+    uses: ./.github/workflows/ci-heavy.yml
+    permissions:
+      contents: read
+
+  ci-full:
+    name: ci/full
+    needs: heavy
+    # Skipped when the heavy tier is skipped, so an unrelated label cannot leave
+    # a red check behind. On a real ci:full run this is the one context to read.
+    if: always() && needs.heavy.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+          HEAVY: ${{ needs.heavy.result }}
+        run: |
+          echo "ci:full on $SHA — heavy=$HEAVY"
+          if [[ "$HEAVY" == "success" ]]; then
+            echo "The heavy suite passed on this commit."
+            exit 0
+          fi
+          echo "::error::ci/full failed on $SHA: heavy=$HEAVY"
+          exit 1

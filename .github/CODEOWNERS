@@ -1,0 +1,4 @@
+# The workflow files decide what CI runs and what `ci/full` means, so a change
+# to them needs a review that a pull request cannot give itself. On the upstream
+# repository this should name the maintainers, not the fork owner.
+/.github/ @cesar-alves
