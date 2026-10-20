@@ -39,14 +39,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Rust API (`aurum-core`):** the model catalogue adds four source-breaking or
-  additive changes. `SttSection::model` is now `Option<String>` (it was
+- **Rust API (`aurum-core`):** the model catalogue adds eight source-breaking
+  or additive changes. `SttSection::model` is now `Option<String>` (it was
   `String`), so "no model configured" is distinguishable from a configured id
   and a deployment default applies. `tts::catalogue::PackFile::approx_bytes`
   is now `size_bytes`. `tts::catalogue::TtsModelInfo` gains `hf_revision`.
   `cache::CacheEntry` gains `enabled`, which is omitted when `true` so existing
-  output is unchanged. Downstream code that constructs `SttSection` or reads
-  `approx_bytes` needs updating.
+  output is unchanged. `Config` gains three public fields —
+  `configured_stt_model`, `catalogue` and `catalogue_path` — and has no
+  `Default`, so a downstream `Config { .. }` literal must add them.
+  `UserError` gains `ModelDisabled` for a model a deployment catalogue
+  disabled; it maps to the existing `ModelUnavailable` category (and exit
+  code 2), so the `ErrorDto` contract is unchanged. Downstream code that
+  constructs `SttSection` or `Config`, reads `approx_bytes`, or matches
+  `UserError` exhaustively needs updating.
 
 ### Fixed
 
