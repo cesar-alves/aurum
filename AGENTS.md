@@ -85,11 +85,16 @@ Two tiers.
       gh pr edit <N> --add-label ci:full
       gh pr checks <N> --watch --required
 
-- `ci/full` is the required check. It is posted on the commit the suite tested.
-  Any new push removes the `ci:full` label and leaves `ci/full` missing on the
-  new commit, so trigger it again only when you are done again.
-- Never post commit statuses yourself, never add the label on someone else's
-  pull request without asking, and never merge with `gh pr merge --admin`.
+- The heavy suite is advisory, not a toll gate. When nobody adds the label, no
+  heavy job runs and no `ci/full` check is created, so a pull request whose fast
+  checks passed is green and can merge. Adding the label is how you get more
+  evidence before merging, not a permission slip.
+- `ci/full` is the one context to read when the suite has run. It is reported on
+  the commit the suite tested; a new push removes the label, so an old green can
+  never be mistaken for the new commit.
+- A repository can make `ci/full` required in a ruleset. That is the only thing
+  that turns absence into a block; do it deliberately, and never merge with
+  `gh pr merge --admin`.
 
 ## Boundaries
 
