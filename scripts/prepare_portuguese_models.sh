@@ -243,7 +243,15 @@ if [[ "$actual_q5_sha256" != "$EXPECTED_Q5_SHA256" ]]; then
   exit 4
 fi
 
-partial_path="${MODEL_DIR}/.ggml-large-v3-ptpt-q5_0.bin.$$.aurum.partial"
+# Stage under a unique name that is created exclusively (`noclobber` is
+# `O_EXCL`), so a pre-created symlink or file in the model cache cannot redirect
+# this write the way `cp` alone would. The `.aurum.partial` suffix keeps the
+# leftover sweep in `model::sweep_stale_partials` working.
+partial_path="${MODEL_DIR}/.ggml-large-v3-ptpt-q5_0.bin.${RANDOM}${RANDOM}.$$.aurum.partial"
+( set -C; : > "$partial_path" ) || {
+  echo "refusing to reuse an existing path: $partial_path" >&2
+  exit 3
+}
 trap 'rm -f "$partial_path"' EXIT
 cp "$Q5_PATH" "$partial_path"
 chmod 600 "$partial_path"
