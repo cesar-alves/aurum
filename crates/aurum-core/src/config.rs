@@ -1076,7 +1076,7 @@ impl Config {
             let m = self
                 .model
                 .clone()
-                .unwrap_or_else(|| self.default_model_for_provider());
+                .unwrap_or_else(|| self.default_stt_model());
             if self.stt_provider() == "openrouter"
                 && !m.contains('/')
                 && (crate::model::lookup_model(&m).is_ok() || m == DEFAULT_LOCAL_MODEL)
@@ -1108,21 +1108,23 @@ impl Config {
                 }
             }
             "local" => {
-                // Model identity is `[stt].model` or the catalogue's global
-                // default (`base`). Language is a decoding hint only and never
-                // selects weights, so experimental specialists stay explicit.
-                if let Some(model) = self.configured_stt_model.as_deref() {
+                // Model identity is `[stt].model`, then a host-set
+                // `Config::model`, then the catalogue's global default (`base`).
+                // Language is a decoding hint only and never selects weights, so
+                // experimental specialists stay explicit.
+                if let Some(model) = self
+                    .configured_stt_model
+                    .as_deref()
+                    .or(self.model.as_deref())
+                {
                     self.check_local_stt_model_allowed(model)?;
                     // Keep the configured spelling (e.g. an alias such as
                     // `turbo`), exactly as before the catalogue existed.
                     return Ok(model.to_string());
                 }
-                Ok(self
-                    .catalogue
-                    .resolve(crate::catalogue::Direction::Stt, None, None)?
-                    .record
-                    .id
-                    .clone())
+                let model = self.default_stt_model();
+                self.check_local_stt_model_allowed(&model)?;
+                Ok(model)
             }
             _ => Ok(self
                 .model
@@ -1175,9 +1177,18 @@ impl Config {
             .unwrap_or(DEFAULT_LOCAL_MODEL)
     }
 
-    fn default_model_for_provider(&self) -> String {
+    /// The STT model this provider uses when nothing selects one explicitly:
+    /// the deployment catalogue's global default for local STT
+    /// (`[defaults.stt].global`, falling back to `base`), the vendor default for
+    /// OpenRouter, and the built-in `base` otherwise.
+    ///
+    /// [`Self::default_local_stt_model`] is the catalogue's global default
+    /// whatever the provider is; this is the provider-aware resolution shared by
+    /// [`Self::resolve_model`] and the SDK projection, so the two cannot drift.
+    pub(crate) fn default_stt_model(&self) -> String {
         match self.stt_provider().as_str() {
             "openrouter" => self.openrouter_default_model.clone(),
+            "local" => self.default_local_stt_model().to_string(),
             _ => DEFAULT_LOCAL_MODEL.to_string(),
         }
     }
@@ -2219,6 +2230,33 @@ tier = "supported"
         let (_dir, cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "[stt]\nmodel = \"tiny\"\n");
         assert_eq!(cfg.model.as_deref(), Some("tiny"));
         assert_eq!(cfg.resolve_model(cfg.model.is_some()).unwrap(), "tiny");
+    }
+
+    #[test]
+    fn host_projected_config_resolves_the_deployment_default() {
+        let (_dir, mut cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "");
+        // A library host may project a `Config` without `[stt].model` and
+        // without the `Config::load` fallback already applied.
+        cfg.model = None;
+        cfg.configured_stt_model = None;
+        assert_eq!(cfg.resolve_model(false).unwrap(), "small");
+        // `model_explicitly_set = true` with nothing set is not `base` either.
+        assert_eq!(cfg.resolve_model(true).unwrap(), "small");
+    }
+
+    #[test]
+    fn a_host_set_local_model_still_wins_over_the_deployment_default() {
+        let (_dir, mut cfg) = load_with_deployment(REPLACE_BASE_DEFAULT, "");
+        cfg.configured_stt_model = None;
+        cfg.model = Some("tiny-q5_1".into());
+        assert_eq!(cfg.resolve_model(false).unwrap(), "tiny-q5_1");
+        // Narrowing still governs the host's choice: `base` is disabled here.
+        cfg.model = Some("base".into());
+        let err = cfg.resolve_model(false).unwrap_err().to_string();
+        assert!(
+            err.contains("disabled by the deployment catalogue"),
+            "{err}"
+        );
     }
 
     #[test]
