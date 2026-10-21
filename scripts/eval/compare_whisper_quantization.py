@@ -125,17 +125,23 @@ def main() -> None:
     for row in results:
         by_dialect[row["dialect"]].append(row)
     for dialect, rows in by_dialect.items():
-        if len(rows) == 2:
-            comparisons.append(
-                {
-                    "dialect": dialect,
-                    "labels": [row["label"] for row in rows],
-                    "normalized_transcripts_equal": rows[0]["normalized_hypothesis"]
-                    == rows[1]["normalized_hypothesis"],
-                    "wer_delta_second_minus_first": round(rows[1]["wer"] - rows[0]["wer"], 6),
-                    "cer_delta_second_minus_first": round(rows[1]["cer"] - rows[0]["cer"], 6),
-                }
-            )
+        if len(rows) != 2:
+            continue
+        # Two failed runs both have an empty hypothesis, which would otherwise be
+        # reported as identical transcripts with zero WER/CER deltas.
+        if any(row["status"] != "ok" for row in rows):
+            print(f"{dialect}: comparison skipped (a run did not succeed)")
+            continue
+        comparisons.append(
+            {
+                "dialect": dialect,
+                "labels": [row["label"] for row in rows],
+                "normalized_transcripts_equal": rows[0]["normalized_hypothesis"]
+                == rows[1]["normalized_hypothesis"],
+                "wer_delta_second_minus_first": round(rows[1]["wer"] - rows[0]["wer"], 6),
+                "cer_delta_second_minus_first": round(rows[1]["cer"] - rows[0]["cer"], 6),
+            }
+        )
 
     report = {
         "schema_version": 1,
