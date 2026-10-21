@@ -332,10 +332,7 @@ impl AurumConfig {
             },
             stt: SttConfig {
                 provider: c.provider.clone(),
-                model: c
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| c.resolve_model_or_default()),
+                model: c.model.clone().unwrap_or_else(|| c.default_stt_model()),
                 language: c.language.clone(),
                 timestamps: c.timestamps,
             },
@@ -392,27 +389,6 @@ impl AurumConfig {
     }
 }
 
-// Helper on Config for model default without falling through CLI.
-trait ResolveModelOrDefault {
-    fn resolve_model_or_default(&self) -> String;
-}
-
-impl ResolveModelOrDefault for Config {
-    fn resolve_model_or_default(&self) -> String {
-        if let Some(model) = self.model.as_ref() {
-            return model.clone();
-        }
-        // A deployment catalogue's global default is the local STT default, so
-        // a library host that projects a `Config` does not ask for `base` after
-        // the deployment disabled it. Remote providers keep the compile-time
-        // default: the catalogue is a local-model catalogue.
-        match self.provider.trim().to_ascii_lowercase().as_str() {
-            "local" => self.default_local_stt_model().to_string(),
-            _ => crate::config::DEFAULT_LOCAL_MODEL.into(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,7 +413,7 @@ mod tests {
         assert_eq!(cfg.model.as_deref(), Some("tiny-q5_1"));
         // A host-built projection may leave it unset.
         cfg.model = None;
-        assert_eq!(cfg.resolve_model_or_default(), "tiny-q5_1");
+        assert_eq!(cfg.default_stt_model(), "tiny-q5_1");
         let projected = AurumConfig::try_from_config(cfg).unwrap();
         assert_eq!(projected.stt.model, "tiny-q5_1");
     }
