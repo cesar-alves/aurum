@@ -571,7 +571,8 @@ pub struct EffectiveConfigDiagnostic {
     /// existed still decodes under `SUPPORT_BUNDLE_VERSION = 1`.
     #[serde(default)]
     pub catalogue_path: Option<String>,
-    /// `sha256` of the effective records; empty in a pre-catalogue bundle.
+    /// `sha256` of the effective records and defaults; empty in a pre-catalogue
+    /// bundle.
     #[serde(default)]
     pub catalogue_digest: String,
     /// Empty in a pre-catalogue bundle.
