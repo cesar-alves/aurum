@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Rust API (`aurum-core`):** the model catalogue adds eight source-breaking
+- **Rust API (`aurum-core`):** the model catalogue adds eleven source-breaking
   or additive changes. `SttSection::model` is now `Option<String>` (it was
   `String`), so "no model configured" is distinguishable from a configured id
   and a deployment default applies. `tts::catalogue::PackFile::approx_bytes`
@@ -48,11 +48,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output is unchanged. `Config` gains three public fields —
   `configured_stt_model`, `catalogue` and `catalogue_path` — and has no
   `Default`, so a downstream `Config { .. }` literal must add them.
-  `UserError` gains `ModelDisabled` for a model a deployment catalogue
-  disabled; it maps to the existing `ModelUnavailable` category (and exit
-  code 2), so the `ErrorDto` contract is unchanged. Downstream code that
-  constructs `SttSection` or `Config`, reads `approx_bytes`, or matches
+  `ConfigFile` gains `catalogue` (`CatalogueSection`), so a `ConfigFile { .. }`
+  literal must add it. `EffectiveConfigDiagnostic` gains `catalogue_path`,
+  `catalogue_digest`, `catalogue_records` and `catalogue_disabled`, and has no
+  `Default`, so a downstream literal must add them too. The new public
+  `catalogue` module (`EffectiveCatalogue`, `CatalogueRecord`,
+  `CatalogueSource`, …) is additive. `UserError` gains `ModelDisabled` for a
+  model a deployment catalogue disabled; it maps to the existing
+  `ModelUnavailable` category (and exit code 2), so the `ErrorDto` contract is
+  unchanged. Downstream code that constructs `SttSection`, `Config`,
+  `ConfigFile` or `EffectiveConfigDiagnostic`, reads `approx_bytes`, or matches
   `UserError` exhaustively needs updating.
+- **Local STT default resolution:** `Config::resolve_model` and the SDK
+  projection now share one provider-aware default. Local STT resolves
+  `[stt].model`, then a host-set `Config::model`, then the catalogue's
+  `[defaults.stt].global` instead of the compile-time `base`, and a
+  deployment-disabled id is rejected on that path rather than silently
+  replaced. No CLI path changes: each either selects explicitly or reads the
+  same value as before.
 
 ### Fixed
 
