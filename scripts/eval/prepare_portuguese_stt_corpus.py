@@ -22,18 +22,15 @@ import zipfile
 from collections import defaultdict, deque
 from pathlib import Path
 
-from datasets import Audio, Dataset, concatenate_datasets, load_dataset
-from huggingface_hub import hf_hub_download
-import soundfile as sf
-
-
 CORAA_REPO = "gabrielrstan/CORAA-v1.1"
 CORAA_REVISION = "719c91226a79f5f9a8984145f15f29626eabc29a"
+CORAA_VARIETY = "pt_br"
 CAMOES_REPO = "inesc-id/camoes_SI"
 CAMOES_REVISION = "c85aec9653738c2a58ead316b61e1438cf845bc5"
 MIN_DURATION_S = 5.0
 MAX_DURATION_S = 20.0
 DEFAULT_CLIPS_PER_DIALECT = 10
+
 
 def user_cache_root() -> Path:
     """Per-user work root. Never a fixed shared path such as /tmp, where another
@@ -61,7 +58,24 @@ def find_zip_member(zf: zipfile.ZipFile, requested: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def group_pt_br_rows(rows: list[dict]) -> dict[tuple[str, str], deque[dict]]:
+    """Group CORAA rows by source/accent, keeping only Brazilian-Portuguese rows.
+
+    CORAA metadata contains both `pt_br` and `pt_pt` varieties. The corpus is
+    labelled pt-BR, so a European row must never enter a group or be selected.
+    """
+    groups: dict[tuple[str, str], deque[dict]] = defaultdict(deque)
+    for row in sorted(rows, key=lambda r: stable_key(r["file_path"])):
+        if row.get("variety", "").strip().lower() != CORAA_VARIETY:
+            continue
+        groups[(row.get("dataset", ""), row.get("accent", ""))].append(row)
+    return groups
+
+
 def prepare_coraa(out_dir: Path, hf_cache: Path, clip_count: int) -> list[dict]:
+    from huggingface_hub import hf_hub_download
+    import soundfile as sf
+
     metadata_path = Path(
         hf_hub_download(
             repo_id=CORAA_REPO,
@@ -83,9 +97,7 @@ def prepare_coraa(out_dir: Path, hf_cache: Path, clip_count: int) -> list[dict]:
     with metadata_path.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    groups: dict[tuple[str, str], deque[dict]] = defaultdict(deque)
-    for row in sorted(rows, key=lambda r: stable_key(r["file_path"])):
-        groups[(row.get("dataset", ""), row.get("accent", ""))].append(row)
+    groups = group_pt_br_rows(rows)
 
     selected: list[dict] = []
     with zipfile.ZipFile(archive_path) as zf:
@@ -125,6 +137,7 @@ def prepare_coraa(out_dir: Path, hf_cache: Path, clip_count: int) -> list[dict]:
                         "source_dataset": CORAA_REPO,
                         "source_revision": CORAA_REVISION,
                         "source_fixture_id": row["file_path"],
+                        "source_variety": row.get("variety"),
                         "source_subset": row.get("dataset"),
                         "accent": row.get("accent"),
                         "speech_style": row.get("speech_style"),
@@ -150,6 +163,8 @@ def raw_audio_bytes(audio: dict) -> bytes:
 
 
 def prepare_camoes(out_dir: Path, hf_cache: Path, clip_count: int) -> list[dict]:
+    from datasets import Audio, Dataset, concatenate_datasets, load_dataset
+
     prepared_dir = (
         hf_cache
         / "inesc-id___camoes_si"
@@ -202,6 +217,8 @@ def prepare_camoes(out_dir: Path, hf_cache: Path, clip_count: int) -> list[dict]
 
 
 def add_camoes_row(row: dict, index: int, out_dir: Path, selected: list[dict]) -> bool:
+    import soundfile as sf
+
     raw = raw_audio_bytes(row["audio"])
     try:
         info = sf.info(io.BytesIO(raw))
@@ -264,10 +281,12 @@ def main() -> None:
             "clips_per_dialect": args.clips_per_dialect,
             "minimum_duration_s": MIN_DURATION_S,
             "maximum_duration_s": MAX_DURATION_S,
+            "coraa_variety": CORAA_VARIETY,
             "ordering": "sha256(source fixture id), round-robin CORAA source/accent",
         },
         "caveats": [
             "CORAA's repository declares its license as unknown; audio is local-only.",
+            "CORAA rows labelled pt_pt upstream are excluded from the pt-BR selection.",
             "CAMOES is an in-domain evaluation for the INESC model and is CC-BY-NC-4.0.",
         ],
         "items": items,
