@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import time
 import unicodedata
 from collections import Counter
@@ -27,6 +28,40 @@ def user_cache_root() -> Path:
     """Per-user work root. Never a fixed shared path such as /tmp, where another
     local user could pre-create or redirect it."""
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "aurum"
+
+
+def safe_component(value: str, limit: int = 64) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value)
+    return (cleaned.strip("-.") or "run")[:limit]
+
+
+def fresh_run_dir(parent: Path, prefix: str) -> Path:
+    """Create a private, previously unused directory for one invocation."""
+    return Path(tempfile.mkdtemp(prefix=f"{safe_component(prefix)}-", dir=parent))
+
+
+def classify_transcript(
+    returncode: int, stderr: str, transcript: Path
+) -> tuple[str, str, str | None]:
+    """Return (status, hypothesis, error) for one invocation.
+
+    A zero exit code is not proof of success: the pinned whisper.cpp prints a
+    read_audio_data error and continues, still returning zero, and a pre-existing
+    transcript would otherwise be read as if this run produced it. The caller
+    must pass a path inside a fresh run directory, and this function only accepts
+    a transcript that exists there.
+    """
+    if returncode != 0:
+        return "error", "", stderr[-2000:] or f"process exited with status {returncode}"
+    if not transcript.is_file():
+        detail = stderr.strip()[-2000:]
+        message = f"process exited 0 but wrote no transcript at {transcript}"
+        return "error", "", f"{message}\n{detail}" if detail else message
+    try:
+        hypothesis = transcript.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError as exc:
+        return "error", "", f"failed to read transcript {transcript}: {exc}"
+    return "ok", hypothesis, None
 
 
 DEFAULT_MODELS = (
@@ -136,6 +171,7 @@ def markdown_report(report: dict) -> str:
             "",
             "- CAMOES may be in-domain for `large-v3-ptpt-q5_0`.",
             "- CORAA declares no repository license; selected audio remains local-only.",
+            "- The pt-BR CORAA selection excludes rows labelled pt_pt upstream.",
             "- Review hypotheses manually for hallucinations, names, numbers, punctuation, and dialect vocabulary.",
             "- Aggregate RTF may combine reused and fresh sequential runs; compare absolute performance only under matching host load.",
             "- Do not claim WER for private audio without reference transcripts.",
@@ -227,7 +263,8 @@ def main() -> None:
                     f"rtf={row['rtf']} reused=true"
                 )
                 continue
-            transcript = transcript_dir / f"{model}-{item['id']}.txt"
+            run_dir = fresh_run_dir(transcript_dir, f"{model}-{item['id']}")
+            transcript = run_dir / "transcript.txt"
             command = [
                 str(aurum),
                 str(audio),
@@ -251,10 +288,8 @@ def main() -> None:
             started = time.perf_counter()
             process = subprocess.run(command, capture_output=True, text=True)
             wall_s = time.perf_counter() - started
-            hypothesis = (
-                transcript.read_text(encoding="utf-8", errors="replace").strip()
-                if process.returncode == 0 and transcript.is_file()
-                else ""
+            status, hypothesis, error = classify_transcript(
+                process.returncode, process.stderr, transcript
             )
             word_errors, reference_words, wer = error_rate(
                 item["reference"], hypothesis, words=True
@@ -271,9 +306,9 @@ def main() -> None:
                 "source_fixture_id": item["source_fixture_id"],
                 "audio_sha256": audio_sha256,
                 "duration_s": item["duration_s"],
-                "status": "ok" if process.returncode == 0 else "error",
+                "status": status,
                 "exit_code": process.returncode,
-                "error": process.stderr[-2000:] if process.returncode else None,
+                "error": error,
                 "reference": item["reference"],
                 "hypothesis": hypothesis,
                 "word_errors": word_errors,
